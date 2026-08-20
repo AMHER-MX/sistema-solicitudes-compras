@@ -1,0 +1,27 @@
+# Opcional: levanta una base de datos PostgreSQL local sin instalar nada.
+#
+#   docker compose up -d
+#   cd backend && npm run db:setup
+#
+# Las credenciales coinciden con backend/.env.example.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: sgc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sgc_compras
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - sgc_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sgc_compras"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  sgc_pgdata:

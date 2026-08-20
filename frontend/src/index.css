@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+/* ===========================================================================
+   TOKENS DE COLOR
+   Se definen como variables CSS normales para poder cambiarlas en modo oscuro,
+   y luego se registran en Tailwind con @theme inline para poder usarlas como
+   utilidades (bg-surface, text-ink, border-hairline, ...).
+   Paleta base validada para daltonismo y contraste.
+   =========================================================================== */
+:root {
+  color-scheme: light;
+
+  --c-plane:        #f9f9f7;   /* fondo de la página */
+  --c-surface:      #fcfcfb;   /* tarjetas / paneles */
+  --c-surface-alt:  #f3f3f0;   /* filas alternas, chips neutros */
+  --c-ink:          #0b0b0b;   /* texto principal */
+  --c-ink-2:        #52514e;   /* texto secundario */
+  --c-muted:        #898781;   /* ejes, etiquetas discretas */
+  --c-hairline:     #e1e0d9;   /* líneas de 1px */
+
+  --c-brand:        #2a78d6;   /* azul institucional (magnitud) */
+  --c-brand-soft:   #cde2fb;
+  --c-brand-strong: #184f95;
+
+  /* Semáforo: solo estos cuatro roles, nunca como color de serie */
+  --c-good:         #0ca30c;
+  --c-warning:      #fab219;
+  --c-serious:      #ec835a;
+  --c-critical:     #d03b3b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --c-plane:        #0d0d0d;
+    --c-surface:      #1a1a19;
+    --c-surface-alt:  #242422;
+    --c-ink:          #ffffff;
+    --c-ink-2:        #c3c2b7;
+    --c-muted:        #898781;
+    --c-hairline:     #2c2c2a;
+
+    --c-brand:        #3987e5;
+    --c-brand-soft:   #184f95;
+    --c-brand-strong: #86b6ef;
+  }
+}
+
+@theme inline {
+  --color-plane:       var(--c-plane);
+  --color-surface:     var(--c-surface);
+  --color-surface-alt: var(--c-surface-alt);
+  --color-ink:         var(--c-ink);
+  --color-ink-2:       var(--c-ink-2);
+  --color-muted:       var(--c-muted);
+  --color-hairline:    var(--c-hairline);
+
+  --color-brand:        var(--c-brand);
+  --color-brand-soft:   var(--c-brand-soft);
+  --color-brand-strong: var(--c-brand-strong);
+
+  --color-good:     var(--c-good);
+  --color-warning:  var(--c-warning);
+  --color-serious:  var(--c-serious);
+  --color-critical: var(--c-critical);
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* --------------------------------------------------------------------------- */
+
+html, body, #root { height: 100%; }
+
+body {
+  background-color: var(--c-plane);
+  color: var(--c-ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Números que deben alinearse en columnas (tablas, ejes). */
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Foco visible y consistente para accesibilidad con teclado. */
+:where(a, button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--c-brand);
+  outline-offset: 2px;
+}
