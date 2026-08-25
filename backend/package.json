@@ -8,10 +8,12 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "build:interfaz": "npm --prefix ../frontend install && npm --prefix ../frontend run build",
     "db:setup": "node scripts/setupDb.js",
     "smoke": "node scripts/smokeTest.js",
     "test:erp": "node scripts/testErpSql.js",
-    "test": "node scripts/testErpSql.js && node scripts/smokeTest.js"
+    "test": "node scripts/testErpSql.js && node scripts/validarSql.js && node scripts/smokeTest.js",
+    "test:sql": "node scripts/validarSql.js"
   },
   "dependencies": {
     "axios": "^1.7.7",
@@ -21,8 +23,7 @@
     "express": "^4.21.1",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
-    "mssql": "^10.0.4",
-    "pg": "^8.13.1"
+    "mssql": "^10.0.4"
   },
   "engines": {
     "node": ">=20"

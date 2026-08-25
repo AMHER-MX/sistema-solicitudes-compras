@@ -19,13 +19,15 @@ export const env = {
     .map((s) => s.trim())
     .filter(Boolean),
 
+  // Base de datos propia del sistema (SQL Server, base SGC_COMPRAS).
   db: {
-    host: process.env.PGHOST || 'localhost',
-    port: num(process.env.PGPORT, 5432),
-    database: process.env.PGDATABASE || 'sgc_compras',
-    user: process.env.PGUSER || 'postgres',
-    password: process.env.PGPASSWORD || 'postgres',
-    ssl: bool(process.env.PGSSL) ? { rejectUnauthorized: false } : false,
+    host: process.env.DB_HOST || 'localhost',
+    port: num(process.env.DB_PORT, 1433),
+    database: process.env.DB_DATABASE || 'SGC_COMPRAS',
+    user: process.env.DB_USER || 'sa',
+    password: process.env.DB_PASSWORD || '',
+    encrypt: bool(process.env.DB_ENCRYPT, true),
+    trustServerCertificate: bool(process.env.DB_TRUST_CERT, true),
   },
 
   jwt: {

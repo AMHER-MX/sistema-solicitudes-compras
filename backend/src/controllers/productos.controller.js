@@ -6,7 +6,7 @@
  * vendedor pueda buscar "filtro" y no solo el código exacto.
  */
 import { consultarExistencias } from '../services/erp/index.js';
-import { query } from '../config/db.js';
+import { queryUno } from '../config/db.js';
 import { badRequest } from '../utils/errors.js';
 
 export async function existencias(req, res) {
@@ -18,9 +18,10 @@ export async function existencias(req, res) {
   // Si no se especifica almacén, usamos la clave de la sucursal del usuario.
   let almacen = (req.query.almacen ?? '').toString().trim();
   if (!almacen && req.usuario?.sucursal_id) {
-    const { rows: [suc] } = await query('SELECT clave FROM sucursales WHERE id = $1', [
-      req.usuario.sucursal_id,
-    ]);
+    const suc = await queryUno(
+      'SELECT clave FROM dbo.sucursales WHERE id = @id',
+      { id: req.usuario.sucursal_id },
+    );
     almacen = suc?.clave || '';
   }
 

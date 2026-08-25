@@ -1,11 +1,55 @@
 /**
- * Capa de acceso a datos de las solicitudes de compra.
+ * Capa de acceso a datos de las solicitudes de compra (SQL Server).
  * Aquí vive todo el SQL; los controladores solo validan y responden.
+ *
+ * Reglas que se respetan en todo el archivo:
+ *   - Todo valor variable viaja como parámetro (@nombre), nunca concatenado.
+ *     Lo único que se interpola son nombres de parámetro que genera el propio
+ *     código (@est0, @est1, ...), jamás algo que venga del usuario.
+ *   - Las escrituras que deben ser atómicas van dentro de withTransaction.
  */
-import { query, withTransaction } from '../config/db.js';
+import { T, query, queryUno, withTransaction } from '../config/db.js';
 import { ESTATUS, ESTATUS_FINALES } from '../utils/estatus.js';
 import { notFound } from '../utils/errors.js';
 import { existenciaDeSku } from './erp/index.js';
+
+/**
+ * Columnas del encabezado con sus datos relacionados, reutilizadas en listado
+ * y detalle. Se listan una por una a propósito, en vez de usar `s.*`, por
+ * `fecha_promesa_entrega`:
+ *
+ * es una columna DATE, y el driver la entrega como medianoche UTC. Al
+ * formatearla un navegador en México (UTC-6) mostraría el día ANTERIOR — una
+ * promesa de entrega corrida un día es justo el tipo de error que nadie nota
+ * hasta que el cliente reclama. Se convierte a texto 'YYYY-MM-DD' aquí, donde
+ * no hay zona horaria que la desplace.
+ */
+const SELECT_CABECERA = `
+    s.id,
+    s.folio,
+    s.id_vendedor,
+    s.id_sucursal,
+    s.id_cliente,
+    s.prioridad,
+    s.estatus_actual,
+    s.observaciones,
+    s.fecha_creacion,
+    CONVERT(VARCHAR(10), s.fecha_promesa_entrega, 23) AS fecha_promesa_entrega,
+    s.fecha_cierre,
+    s.id_comprador_asignado,
+    s.actualizado_en,
+    u.nombre    AS vendedor_nombre,
+    su.nombre   AS sucursal_nombre,
+    su.clave    AS sucursal_clave,
+    c.nombre    AS cliente_nombre,
+    comp.nombre AS comprador_nombre`;
+
+const FROM_CABECERA = `
+  FROM      dbo.solicitudes_compras s
+  JOIN      dbo.usuarios   u    ON u.id    = s.id_vendedor
+  JOIN      dbo.sucursales su   ON su.id   = s.id_sucursal
+  LEFT JOIN dbo.clientes   c    ON c.id    = s.id_cliente
+  LEFT JOIN dbo.usuarios   comp ON comp.id = s.id_comprador_asignado`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ALTA
@@ -31,7 +75,7 @@ export async function crearSolicitud(datos) {
   } = datos;
 
   // Si el frontend no mandó la existencia, la sellamos desde el ERP.
-  // Se hace ANTES de abrir la transacción para no mantener el lock abierto
+  // Se hace ANTES de abrir la transacción para no mantener locks abiertos
   // mientras esperamos una llamada de red.
   const itemsConExistencia = await Promise.all(
     items.map(async (it) => ({
@@ -43,43 +87,55 @@ export async function crearSolicitud(datos) {
     })),
   );
 
-  return withTransaction(async (client) => {
-    // 1) Encabezado. El folio lo genera el trigger tg_solicitudes_folio.
-    const { rows: [cabecera] } = await client.query(
-      `INSERT INTO solicitudes_compras
+  return withTransaction(async (ejecutar) => {
+    // 1) Encabezado. El folio lo genera el DEFAULT de la columna.
+    const [cabecera] = await ejecutar(
+      `INSERT INTO dbo.solicitudes_compras
          (id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual, observaciones)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [id_vendedor, id_sucursal, id_cliente, prioridad, ESTATUS.PENDIENTE, observaciones],
+       OUTPUT INSERTED.*
+       VALUES (@vendedor, @sucursal, @cliente, @prioridad, @estatus, @observaciones)`,
+      {
+        vendedor: id_vendedor,
+        sucursal: id_sucursal,
+        cliente: { tipo: T.Int, valor: id_cliente },
+        prioridad,
+        estatus: ESTATUS.PENDIENTE,
+        observaciones: { tipo: T.NVarChar, valor: observaciones },
+      },
     );
 
     // 2) Partidas.
     const detalle = [];
     for (const it of itemsConExistencia) {
-      const { rows: [fila] } = await client.query(
-        `INSERT INTO solicitudes_detalle
+      const [fila] = await ejecutar(
+        `INSERT INTO dbo.solicitudes_detalle
            (id_solicitud, sku_producto, descripcion, cantidad_solicitada,
             existencia_real_almacen, precio_estimado)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING *`,
-        [
-          cabecera.id,
-          it.sku_producto,
-          it.descripcion,
-          it.cantidad_solicitada,
-          it.existencia_real_almacen,
-          it.precio_estimado ?? null,
-        ],
+         OUTPUT INSERTED.*
+         VALUES (@solicitud, @sku, @descripcion, @cantidad, @existencia, @precio)`,
+        {
+          solicitud: cabecera.id,
+          sku: it.sku_producto,
+          descripcion: it.descripcion,
+          cantidad: { tipo: T.Decimal(12, 2), valor: Number(it.cantidad_solicitada) },
+          existencia: { tipo: T.Decimal(12, 2), valor: Number(it.existencia_real_almacen) },
+          precio: { tipo: T.Decimal(12, 2), valor: it.precio_estimado ?? null },
+        },
       );
       detalle.push(fila);
     }
 
     // 3) Primer movimiento del historial: nace en 'Pendiente'.
-    await client.query(
-      `INSERT INTO solicitud_historial
+    await ejecutar(
+      `INSERT INTO dbo.solicitud_historial
          (id_solicitud, id_usuario, estatus_anterior, estatus_nuevo, comentario)
-       VALUES ($1, $2, NULL, $3, $4)`,
-      [cabecera.id, id_vendedor, ESTATUS.PENDIENTE, 'Solicitud creada por el vendedor.'],
+       VALUES (@solicitud, @usuario, NULL, @estatus, @comentario)`,
+      {
+        solicitud: cabecera.id,
+        usuario: id_vendedor,
+        estatus: ESTATUS.PENDIENTE,
+        comentario: 'Solicitud creada por el vendedor.',
+      },
     );
 
     return { ...cabecera, detalle };
@@ -92,8 +148,7 @@ export async function crearSolicitud(datos) {
 
 /**
  * Listado con filtros opcionales y paginación.
- * Los filtros se arman dinámicamente con parámetros ($1, $2, ...) para
- * evitar cualquier riesgo de inyección SQL.
+ * Los filtros se arman dinámicamente pero SIEMPRE con parámetros.
  */
 export async function listarSolicitudes(filtros = {}) {
   const {
@@ -103,29 +158,30 @@ export async function listarSolicitudes(filtros = {}) {
   } = filtros;
 
   const where = [];
-  const params = [];
-  const add = (sql, valor) => {
-    params.push(valor);
-    where.push(sql.replace('?', `$${params.length}`));
-  };
+  const params = {};
 
-  if (id_vendedor) add('s.id_vendedor = ?', Number(id_vendedor));
-  if (sucursal)    add('s.id_sucursal = ?', Number(sucursal));
-  if (prioridad)   add('s.prioridad = ?', prioridad);
-  if (desde)       add('s.fecha_creacion >= ?', desde);
-  if (hasta)       add('s.fecha_creacion <= ?', hasta);
-  // Búsqueda libre por folio o nombre de cliente (usa el mismo parámetro dos veces).
+  if (id_vendedor) { params.vendedor = Number(id_vendedor); where.push('s.id_vendedor = @vendedor'); }
+  if (sucursal)    { params.sucursal = Number(sucursal);    where.push('s.id_sucursal = @sucursal'); }
+  if (prioridad)   { params.prioridad = prioridad;          where.push('s.prioridad = @prioridad'); }
+  if (desde)       { params.desde = { tipo: T.DateTime2, valor: new Date(desde) }; where.push('s.fecha_creacion >= @desde'); }
+  if (hasta)       { params.hasta = { tipo: T.DateTime2, valor: new Date(hasta) }; where.push('s.fecha_creacion <= @hasta'); }
+
+  // Búsqueda libre por folio o nombre de cliente.
   if (busqueda) {
-    params.push(`%${busqueda}%`);
-    where.push(`(s.folio ILIKE $${params.length} OR c.nombre ILIKE $${params.length})`);
+    params.busqueda = `%${busqueda}%`;
+    where.push('(s.folio LIKE @busqueda OR c.nombre LIKE @busqueda)');
   }
 
   // `estatus` acepta uno o varios separados por coma: ?estatus=Pendiente,Autorizada
   if (estatus) {
     const lista = String(estatus).split(',').map((e) => e.trim()).filter(Boolean);
     if (lista.length) {
-      params.push(lista);
-      where.push(`s.estatus_actual = ANY($${params.length})`);
+      // Solo se interpolan nombres de parámetro que genera este código.
+      const nombres = lista.map((valor, i) => {
+        params[`est${i}`] = valor;
+        return `@est${i}`;
+      });
+      where.push(`s.estatus_actual IN (${nombres.join(', ')})`);
     }
   }
 
@@ -133,72 +189,52 @@ export async function listarSolicitudes(filtros = {}) {
 
   const lim = Math.min(Number(limite) || 50, 200);
   const off = (Math.max(Number(pagina) || 1, 1) - 1) * lim;
-  params.push(lim, off);
+  params.limite = lim;
+  params.offset = off;
 
-  const sql = `
-    SELECT  s.*,
-            u.nombre  AS vendedor_nombre,
-            su.nombre AS sucursal_nombre,
-            su.clave  AS sucursal_clave,
-            c.nombre  AS cliente_nombre,
-            comp.nombre AS comprador_nombre,
-            COUNT(d.id)::int AS total_partidas,
-            COALESCE(SUM(d.cantidad_solicitada), 0)::float AS total_piezas,
-            COALESCE(SUM(d.cantidad_solicitada * COALESCE(d.precio_estimado, 0)), 0)::float AS monto_estimado,
-            -- Días transcurridos desde el alta (para resaltar solicitudes añejas)
-            ROUND(EXTRACT(EPOCH FROM (NOW() - s.fecha_creacion)) / 86400.0, 1)::float AS dias_abierta
-    FROM        solicitudes_compras s
-    JOIN        usuarios   u    ON u.id  = s.id_vendedor
-    JOIN        sucursales su    ON su.id = s.id_sucursal
-    LEFT JOIN   clientes   c     ON c.id  = s.id_cliente
-    LEFT JOIN   usuarios   comp  ON comp.id = s.id_comprador_asignado
-    LEFT JOIN   solicitudes_detalle d ON d.id_solicitud = s.id
+  return query(`
+    SELECT ${SELECT_CABECERA},
+           COUNT(d.id)                                                        AS total_partidas,
+           ISNULL(SUM(d.cantidad_solicitada), 0)                              AS total_piezas,
+           ISNULL(SUM(d.cantidad_solicitada * ISNULL(d.precio_estimado, 0)), 0) AS monto_estimado,
+           -- Días transcurridos desde el alta (resalta las solicitudes añejas)
+           ROUND(DATEDIFF(SECOND, s.fecha_creacion, SYSUTCDATETIME()) / 86400.0, 1) AS dias_abierta
+    ${FROM_CABECERA}
+    LEFT JOIN dbo.solicitudes_detalle d ON d.id_solicitud = s.id
     ${clausula}
-    GROUP BY    s.id, u.nombre, su.nombre, su.clave, c.nombre, comp.nombre
-    ORDER BY    -- Urgente primero, luego lo más viejo arriba
-                CASE s.prioridad WHEN 'Urgente' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END,
-                s.fecha_creacion ASC
-    LIMIT  $${params.length - 1}
-    OFFSET $${params.length}
-  `;
-
-  const { rows } = await query(sql, params);
-  return rows;
+    GROUP BY s.id, s.folio, s.id_vendedor, s.id_sucursal, s.id_cliente, s.prioridad,
+             s.estatus_actual, s.observaciones, s.fecha_creacion, s.fecha_promesa_entrega,
+             s.fecha_cierre, s.id_comprador_asignado, s.actualizado_en,
+             u.nombre, su.nombre, su.clave, c.nombre, comp.nombre
+    ORDER BY -- Urgente primero, luego lo más viejo arriba
+             CASE s.prioridad WHEN 'Urgente' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END,
+             s.fecha_creacion ASC
+    OFFSET @offset ROWS FETCH NEXT @limite ROWS ONLY
+  `, params);
 }
 
 /** Solicitud completa: encabezado + partidas + bitácora. */
 export async function obtenerSolicitud(id) {
-  const { rows: [cabecera] } = await query(
-    `SELECT  s.*,
-             u.nombre  AS vendedor_nombre,
-             su.nombre AS sucursal_nombre,
-             su.clave  AS sucursal_clave,
-             c.nombre  AS cliente_nombre,
-             comp.nombre AS comprador_nombre
-     FROM      solicitudes_compras s
-     JOIN      usuarios   u   ON u.id  = s.id_vendedor
-     JOIN      sucursales su  ON su.id = s.id_sucursal
-     LEFT JOIN clientes   c   ON c.id  = s.id_cliente
-     LEFT JOIN usuarios   comp ON comp.id = s.id_comprador_asignado
-     WHERE     s.id = $1`,
-    [id],
+  const cabecera = await queryUno(
+    `SELECT ${SELECT_CABECERA} ${FROM_CABECERA} WHERE s.id = @id`,
+    { id: Number(id) },
   );
 
   if (!cabecera) throw notFound(`No existe la solicitud ${id}`);
 
-  const [{ rows: detalle }, { rows: historial }] = await Promise.all([
+  const [detalle, historial] = await Promise.all([
     query(
-      `SELECT * FROM solicitudes_detalle
-       WHERE id_solicitud = $1 ORDER BY id`,
-      [id],
+      `SELECT * FROM dbo.solicitudes_detalle
+       WHERE id_solicitud = @id ORDER BY id`,
+      { id: Number(id) },
     ),
     query(
       `SELECT h.*, u.nombre AS usuario_nombre, u.rol AS usuario_rol
-       FROM      solicitud_historial h
-       JOIN      usuarios u ON u.id = h.id_usuario
-       WHERE     h.id_solicitud = $1
+       FROM      dbo.solicitud_historial h
+       JOIN      dbo.usuarios u ON u.id = h.id_usuario
+       WHERE     h.id_solicitud = @id
        ORDER BY  h.fecha_movimiento ASC, h.id ASC`,
-      [id],
+      { id: Number(id) },
     ),
   ]);
 
@@ -211,39 +247,61 @@ export async function obtenerSolicitud(id) {
 
 /**
  * Actualiza el estatus, la fecha promesa y deja constancia en el historial.
- * Bloquea la fila con SELECT ... FOR UPDATE para evitar que dos compradores
- * muevan la misma solicitud al mismo tiempo.
+ *
+ * El SELECT lleva WITH (UPDLOCK, ROWLOCK): reserva el renglón hasta que
+ * termine la transacción, para que dos compradores no muevan el mismo folio
+ * al mismo tiempo.
  */
 export async function cambiarEstatus({ id, id_usuario, estatus_nuevo, comentario, fecha_promesa_entrega, asignarme }) {
-  return withTransaction(async (client) => {
-    const { rows: [actual] } = await client.query(
-      'SELECT id, estatus_actual FROM solicitudes_compras WHERE id = $1 FOR UPDATE',
-      [id],
+  return withTransaction(async (ejecutar) => {
+    const [actual] = await ejecutar(
+      `SELECT id, estatus_actual
+       FROM   dbo.solicitudes_compras WITH (UPDLOCK, ROWLOCK)
+       WHERE  id = @id`,
+      { id: Number(id) },
     );
     if (!actual) throw notFound(`No existe la solicitud ${id}`);
 
     const estatus_anterior = actual.estatus_actual;
 
-    // Al cerrar la solicitud sellamos la fecha de cierre (alimenta el KPI
-    // de tiempo promedio de atención).
+    // Al cerrar la solicitud sellamos la fecha de cierre: alimenta el KPI
+    // de tiempo promedio de atención.
     const cierra = ESTATUS_FINALES.includes(estatus_nuevo);
 
-    const { rows: [actualizada] } = await client.query(
-      `UPDATE solicitudes_compras
-          SET estatus_actual        = $1,
-              fecha_promesa_entrega = COALESCE($2, fecha_promesa_entrega),
-              fecha_cierre          = CASE WHEN $3 THEN NOW() ELSE fecha_cierre END,
-              id_comprador_asignado = CASE WHEN $4 THEN $5 ELSE id_comprador_asignado END
-        WHERE id = $6
-        RETURNING *`,
-      [estatus_nuevo, fecha_promesa_entrega || null, cierra, Boolean(asignarme), id_usuario, id],
+    const [actualizada] = await ejecutar(
+      `UPDATE dbo.solicitudes_compras
+          SET estatus_actual        = @estatus,
+              fecha_promesa_entrega = ISNULL(@promesa, fecha_promesa_entrega),
+              fecha_cierre          = CASE WHEN @cierra = 1 THEN SYSUTCDATETIME() ELSE fecha_cierre END,
+              id_comprador_asignado = CASE WHEN @asignar = 1 THEN @usuario ELSE id_comprador_asignado END,
+              actualizado_en        = SYSUTCDATETIME()
+        OUTPUT INSERTED.id, INSERTED.folio, INSERTED.id_vendedor, INSERTED.id_sucursal,
+               INSERTED.id_cliente, INSERTED.prioridad, INSERTED.estatus_actual,
+               INSERTED.observaciones, INSERTED.fecha_creacion,
+               CONVERT(VARCHAR(10), INSERTED.fecha_promesa_entrega, 23) AS fecha_promesa_entrega,
+               INSERTED.fecha_cierre, INSERTED.id_comprador_asignado, INSERTED.actualizado_en
+        WHERE id = @id`,
+      {
+        estatus: estatus_nuevo,
+        promesa: { tipo: T.Date, valor: fecha_promesa_entrega || null },
+        cierra: { tipo: T.Bit, valor: cierra },
+        asignar: { tipo: T.Bit, valor: Boolean(asignarme) },
+        usuario: id_usuario,
+        id: Number(id),
+      },
     );
 
-    await client.query(
-      `INSERT INTO solicitud_historial
+    await ejecutar(
+      `INSERT INTO dbo.solicitud_historial
          (id_solicitud, id_usuario, estatus_anterior, estatus_nuevo, comentario)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [id, id_usuario, estatus_anterior, estatus_nuevo, comentario || null],
+       VALUES (@id, @usuario, @anterior, @nuevo, @comentario)`,
+      {
+        id: Number(id),
+        usuario: id_usuario,
+        anterior: { tipo: T.NVarChar, valor: estatus_anterior },
+        nuevo: estatus_nuevo,
+        comentario: { tipo: T.NVarChar, valor: comentario || null },
+      },
     );
 
     return { ...actualizada, estatus_anterior };
@@ -254,109 +312,121 @@ export async function cambiarEstatus({ id, id_usuario, estatus_nuevo, comentario
 // MÉTRICAS PARA EL DASHBOARD GERENCIAL
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Estados que ya cerraron: se repiten en varios agregados del tablero.
+const CERRADOS_SQL = `('Recibido','Cancelada','Rechazada')`;
+
 /**
  * @param {object} filtros
  * @param {number} [filtros.dias]     ventana de análisis (default 30)
  * @param {number} [filtros.sucursal] limitar a una sucursal
  */
 export async function metricasGerencia({ dias = 30, sucursal } = {}) {
-  const params = [Number(dias)];
+  const params = { dias: Number(dias) };
   let filtroSucursal = '';
   if (sucursal) {
-    params.push(Number(sucursal));
-    filtroSucursal = ` AND s.id_sucursal = $${params.length}`;
+    params.sucursal = Number(sucursal);
+    filtroSucursal = ' AND s.id_sucursal = @sucursal';
   }
 
-  const ventana = `s.fecha_creacion >= NOW() - ($1::int * INTERVAL '1 day')${filtroSucursal}`;
+  const ventana = `s.fecha_creacion >= DATEADD(DAY, -@dias, SYSUTCDATETIME())${filtroSucursal}`;
 
   // 1) Conteo por estatus
-  const porEstatus = query(
-    `SELECT s.estatus_actual AS estatus, COUNT(*)::int AS total
-     FROM   solicitudes_compras s
-     WHERE  ${ventana}
-     GROUP BY s.estatus_actual
-     ORDER BY total DESC`,
-    params,
-  );
+  const porEstatus = query(`
+    SELECT s.estatus_actual AS estatus, COUNT(*) AS total
+    FROM   dbo.solicitudes_compras s
+    WHERE  ${ventana}
+    GROUP BY s.estatus_actual
+    ORDER BY total DESC`, params);
 
   // 2) Conteo por prioridad
-  const porPrioridad = query(
-    `SELECT s.prioridad, COUNT(*)::int AS total
-     FROM   solicitudes_compras s
-     WHERE  ${ventana}
-     GROUP BY s.prioridad`,
-    params,
-  );
+  const porPrioridad = query(`
+    SELECT s.prioridad, COUNT(*) AS total
+    FROM   dbo.solicitudes_compras s
+    WHERE  ${ventana}
+    GROUP BY s.prioridad`, params);
 
   // 3) Productos más solicitados SIN existencia al momento de pedirlos
-  const topFaltantes = query(
-    `SELECT  d.sku_producto,
-             MIN(d.descripcion)                       AS descripcion,
-             COUNT(DISTINCT s.id)::int                AS veces_solicitado,
-             SUM(d.cantidad_solicitada)::float        AS piezas_solicitadas,
-             COUNT(DISTINCT s.id_sucursal)::int       AS sucursales_afectadas
-     FROM    solicitudes_detalle d
-     JOIN    solicitudes_compras s ON s.id = d.id_solicitud
-     WHERE   d.existencia_real_almacen <= 0
-       AND   ${ventana}
-     GROUP BY d.sku_producto
-     ORDER BY veces_solicitado DESC, piezas_solicitadas DESC
-     LIMIT 10`,
-    params,
-  );
+  const topFaltantes = query(`
+    SELECT TOP (10)
+           d.sku_producto,
+           MIN(d.descripcion)          AS descripcion,
+           COUNT(DISTINCT s.id)        AS veces_solicitado,
+           SUM(d.cantidad_solicitada)  AS piezas_solicitadas,
+           COUNT(DISTINCT s.id_sucursal) AS sucursales_afectadas
+    FROM   dbo.solicitudes_detalle d
+    JOIN   dbo.solicitudes_compras s ON s.id = d.id_solicitud
+    WHERE  d.existencia_real_almacen <= 0 AND ${ventana}
+    GROUP BY d.sku_producto
+    ORDER BY veces_solicitado DESC, piezas_solicitadas DESC`, params);
 
   // 4) Tiempo promedio de atención (solo solicitudes cerradas)
-  const tiempos = query(
-    `SELECT  ROUND(AVG(EXTRACT(EPOCH FROM (s.fecha_cierre - s.fecha_creacion)) / 3600.0)::numeric, 1)::float AS horas_promedio,
-             ROUND(AVG(EXTRACT(EPOCH FROM (s.fecha_cierre - s.fecha_creacion)) / 86400.0)::numeric, 1)::float AS dias_promedio,
-             COUNT(*)::int AS solicitudes_cerradas
-     FROM    solicitudes_compras s
-     WHERE   s.fecha_cierre IS NOT NULL AND ${ventana}`,
-    params,
-  );
+  const tiempos = query(`
+    SELECT ROUND(AVG(CAST(DATEDIFF(SECOND, s.fecha_creacion, s.fecha_cierre) AS DECIMAL(18,4))) / 3600.0, 1)  AS horas_promedio,
+           ROUND(AVG(CAST(DATEDIFF(SECOND, s.fecha_creacion, s.fecha_cierre) AS DECIMAL(18,4))) / 86400.0, 1) AS dias_promedio,
+           COUNT(*) AS solicitudes_cerradas
+    FROM   dbo.solicitudes_compras s
+    WHERE  s.fecha_cierre IS NOT NULL AND ${ventana}`, params);
 
-  // 5) Totales / indicadores de riesgo
-  const totales = query(
-    `SELECT  COUNT(*)::int AS total_solicitudes,
-             COUNT(*) FILTER (WHERE s.estatus_actual NOT IN ('Recibido','Cancelada','Rechazada'))::int AS abiertas,
-             COUNT(*) FILTER (WHERE s.prioridad = 'Urgente'
-                              AND s.estatus_actual NOT IN ('Recibido','Cancelada','Rechazada'))::int AS urgentes_abiertas,
-             COUNT(*) FILTER (WHERE s.fecha_promesa_entrega < CURRENT_DATE
-                              AND s.estatus_actual NOT IN ('Recibido','Cancelada','Rechazada'))::int AS vencidas,
-             COALESCE(SUM(sub.monto), 0)::float AS monto_estimado_total
-     FROM    solicitudes_compras s
-     LEFT JOIN (
-        SELECT id_solicitud, SUM(cantidad_solicitada * COALESCE(precio_estimado, 0)) AS monto
-        FROM   solicitudes_detalle GROUP BY id_solicitud
-     ) sub ON sub.id_solicitud = s.id
-     WHERE   ${ventana}`,
-    params,
-  );
+  // 5) Totales e indicadores de riesgo
+  const totales = query(`
+    SELECT COUNT(*) AS total_solicitudes,
+           SUM(CASE WHEN s.estatus_actual NOT IN ${CERRADOS_SQL} THEN 1 ELSE 0 END) AS abiertas,
+           SUM(CASE WHEN s.prioridad = 'Urgente'
+                     AND s.estatus_actual NOT IN ${CERRADOS_SQL} THEN 1 ELSE 0 END) AS urgentes_abiertas,
+           SUM(CASE WHEN s.fecha_promesa_entrega < CAST(SYSUTCDATETIME() AS DATE)
+                     AND s.estatus_actual NOT IN ${CERRADOS_SQL} THEN 1 ELSE 0 END) AS vencidas,
+           ISNULL(SUM(sub.monto), 0) AS monto_estimado_total
+    FROM   dbo.solicitudes_compras s
+    LEFT JOIN (
+      SELECT id_solicitud, SUM(cantidad_solicitada * ISNULL(precio_estimado, 0)) AS monto
+      FROM   dbo.solicitudes_detalle GROUP BY id_solicitud
+    ) sub ON sub.id_solicitud = s.id
+    WHERE  ${ventana}`, params);
 
   // 6) Carga por sucursal
-  const porSucursal = query(
-    `SELECT  su.clave, su.nombre,
-             COUNT(*)::int AS total,
-             COUNT(*) FILTER (WHERE s.estatus_actual NOT IN ('Recibido','Cancelada','Rechazada'))::int AS abiertas
-     FROM    solicitudes_compras s
-     JOIN    sucursales su ON su.id = s.id_sucursal
-     WHERE   ${ventana}
-     GROUP BY su.clave, su.nombre
-     ORDER BY total DESC`,
-    params,
-  );
+  const porSucursal = query(`
+    SELECT su.clave, su.nombre,
+           COUNT(*) AS total,
+           SUM(CASE WHEN s.estatus_actual NOT IN ${CERRADOS_SQL} THEN 1 ELSE 0 END) AS abiertas
+    FROM   dbo.solicitudes_compras s
+    JOIN   dbo.sucursales su ON su.id = s.id_sucursal
+    WHERE  ${ventana}
+    GROUP BY su.clave, su.nombre
+    ORDER BY total DESC`, params);
 
   const [e, p, f, t, tot, suc] = await Promise.all([
     porEstatus, porPrioridad, topFaltantes, tiempos, totales, porSucursal,
   ]);
 
+  // SQL Server devuelve DECIMAL como string en algunos casos; se normaliza
+  // aquí para que el frontend siempre reciba números.
+  const num = (v) => (v === null || v === undefined ? null : Number(v));
+
   return {
     ventana_dias: Number(dias),
-    totales: tot.rows[0],
-    tiempo_atencion: t.rows[0],
-    por_estatus: e.rows,
-    por_prioridad: p.rows,
-    por_sucursal: suc.rows,
-    top_faltantes: f.rows,
+    totales: {
+      total_solicitudes: num(tot[0]?.total_solicitudes) ?? 0,
+      abiertas: num(tot[0]?.abiertas) ?? 0,
+      urgentes_abiertas: num(tot[0]?.urgentes_abiertas) ?? 0,
+      vencidas: num(tot[0]?.vencidas) ?? 0,
+      monto_estimado_total: num(tot[0]?.monto_estimado_total) ?? 0,
+    },
+    tiempo_atencion: {
+      horas_promedio: num(t[0]?.horas_promedio),
+      dias_promedio: num(t[0]?.dias_promedio),
+      solicitudes_cerradas: num(t[0]?.solicitudes_cerradas) ?? 0,
+    },
+    por_estatus: e.map((r) => ({ estatus: r.estatus, total: num(r.total) })),
+    por_prioridad: p.map((r) => ({ prioridad: r.prioridad, total: num(r.total) })),
+    por_sucursal: suc.map((r) => ({
+      clave: r.clave, nombre: r.nombre, total: num(r.total), abiertas: num(r.abiertas),
+    })),
+    top_faltantes: f.map((r) => ({
+      sku_producto: r.sku_producto,
+      descripcion: r.descripcion,
+      veces_solicitado: num(r.veces_solicitado),
+      piezas_solicitadas: num(r.piezas_solicitadas),
+      sucursales_afectadas: num(r.sucursales_afectadas),
+    })),
   };
 }

@@ -9,7 +9,7 @@
  *   cd backend && npm run smoke
  */
 import { crearApp } from '../src/app.js';
-import { pool } from '../src/config/db.js';
+import { cerrarPool } from '../src/config/db.js';
 
 const app = crearApp();
 const servidor = app.listen(0);
@@ -63,19 +63,75 @@ async function main() {
   check('Login gerente devuelve token', Boolean(tokenGerente));
 
   console.log('\n== Existencias (ERP) ==');
-  const exSinStock = await api('/productos/existencias?sku=BAL-8890', { token: tokenVendedor });
-  check('Consulta existencias 200', exSinStock.status === 200);
-  check('BAL-8890 sin existencia en el almacén 101',
-    exSinStock.data?.articulos?.[0]?.existencia === 0,
-    `(origen: ${exSinStock.data?.origen})`);
 
-  const exConStock = await api('/productos/existencias?sku=ACE-5W30', { token: tokenVendedor });
-  check('ACE-5W30 con existencia', exConStock.data?.hay_existencia === true);
+  // La prueba NO usa números de parte fijos: los toma de lo que responda el
+  // ERP configurado. Así vale igual contra el catálogo simulado, contra la
+  // API de refacciones o contra el SQL Server de Quiter — y no se rompe
+  // porque un artículo inventado no exista en el inventario real.
+  const busqueda = await api('/productos/existencias?sku=filtro', { token: tokenVendedor });
+  check('Consulta existencias 200', busqueda.status === 200);
+
+  const articulos = busqueda.data?.articulos ?? [];
+  const origen = busqueda.data?.origen;
+  check('Devuelve artículos', articulos.length > 0, `(origen: ${origen}, ${articulos.length} artículos)`);
+
+  check('Cada artículo trae lo que la interfaz necesita',
+    articulos.every((a) => typeof a.sku === 'string' && a.sku.length > 0
+      && typeof a.descripcion === 'string'
+      && Number.isFinite(Number(a.existencia))
+      && Array.isArray(a.existencia_otras_sucursales)));
+
+  check('hay_existencia concuerda con los artículos devueltos',
+    busqueda.data?.hay_existencia === articulos.some((a) => Number(a.existencia) > 0));
+
+  check('Ninguna existencia es negativa',
+    articulos.every((a) => Number(a.existencia) >= 0));
 
   const corto = await api('/productos/existencias?sku=a', { token: tokenVendedor });
   check('Término de 1 caracter -> 400', corto.status === 400);
 
+  // Todo lo que sigue necesita al menos un artículo real. Sin eso, más vale
+  // detenerse con un mensaje claro que arrastrar errores incomprensibles.
+  if (articulos.length === 0) {
+    console.log('\n  El ERP no devolvió ningún artículo para "filtro".');
+    console.log('  Revisa la configuración del origen de datos en el .env y vuelve a intentar.\n');
+    throw new Error('Sin artículos del ERP: no se puede continuar con la prueba');
+  }
+
+  // Se eligen artículos reales para el resto de la prueba.
+  const conStock  = articulos.find((a) => Number(a.existencia) > 0);
+  const sinStock  = articulos.find((a) => Number(a.existencia) === 0);
+  // Para el aviso informativo se prefiere el caso que le importa a Compras:
+  // sin existencia aquí, pero disponible en otra sucursal.
+  const paraTraspaso = articulos.find(
+    (a) => Number(a.existencia) === 0 && a.existencia_otras_sucursales.length > 0);
+  const enOtra = paraTraspaso ?? articulos.find((a) => a.existencia_otras_sucursales.length > 0);
+
+  check('Encuentra al menos un artículo con existencia', Boolean(conStock),
+    conStock ? `(${conStock.sku}: ${conStock.existencia} pzas)` : '');
+
+  if (sinStock) {
+    check('Un artículo sin existencia se reporta en cero', Number(sinStock.existencia) === 0,
+      `(${sinStock.sku})`);
+  } else {
+    console.log('  · Sin artículos en cero entre los resultados; se omite esa comprobación');
+  }
+
+  if (enOtra) {
+    const otras = enOtra.existencia_otras_sucursales
+      .map((o) => `${o.nombre ?? o.almacen} (${o.existencia})`).join(', ');
+    console.log(Number(enOtra.existencia) === 0
+      ? `  · ${enOtra.sku}: 0 aquí, pero hay en ${otras} -> traspaso en vez de compra`
+      : `  · ${enOtra.sku}: ${enOtra.existencia} aquí, y además en ${otras}`);
+  }
+
   console.log('\n== Alta de solicitud ==');
+
+  // Se pide un artículo real. A propósito NO se manda existencia_real_almacen:
+  // así se comprueba que el backend la selle consultando al ERP por su cuenta.
+  const articuloPedido = sinStock ?? articulos[0];
+  const segundo = articulos.find((a) => a.sku !== articuloPedido.sku) ?? articuloPedido;
+
   const creada = await api('/solicitudes', {
     metodo: 'POST',
     token: tokenVendedor,
@@ -84,8 +140,11 @@ async function main() {
       prioridad: 'Urgente',
       observaciones: 'Prueba automatizada de humo.',
       items: [
-        { sku_producto: 'BAL-8890', descripcion: 'Balata delantera cerámica 8890', cantidad_solicitada: 3, precio_estimado: 1250 },
-        { sku_producto: 'BOM-9080', descripcion: 'Bomba de agua 9080', cantidad_solicitada: 1, precio_estimado: 4275 },
+        { sku_producto: articuloPedido.sku, descripcion: articuloPedido.descripcion,
+          cantidad_solicitada: 3, precio_estimado: articuloPedido.precio_lista ?? null },
+        { sku_producto: segundo.sku, descripcion: segundo.descripcion,
+          cantidad_solicitada: 1, precio_estimado: segundo.precio_lista ?? null,
+          existencia_real_almacen: segundo.existencia },
       ],
     },
   });
@@ -94,8 +153,11 @@ async function main() {
   check('Se generó folio', /^SC-\d{4}-\d{6}$/.test(sol?.folio || ''), sol?.folio);
   check('Nace en Pendiente', sol?.estatus_actual === 'Pendiente');
   check('Guardó 2 partidas', sol?.detalle?.length === 2);
-  check('Selló existencia del ERP en la partida',
-    Number(sol?.detalle?.[0]?.existencia_real_almacen) === 0);
+
+  // La primera partida NO traía existencia: la selló el backend desde el ERP.
+  check('Selló la existencia que reporta el ERP',
+    Number(sol?.detalle?.[0]?.existencia_real_almacen) === Number(articuloPedido.existencia),
+    `(${articuloPedido.sku}: esperada ${articuloPedido.existencia}, guardada ${sol?.detalle?.[0]?.existencia_real_almacen})`);
 
   const sinItems = await api('/solicitudes', { metodo: 'POST', token: tokenVendedor, body: { items: [] } });
   check('Solicitud sin partidas -> 400', sinItems.status === 400);
@@ -181,6 +243,6 @@ main()
   .catch((e) => { console.error('\nError en la prueba:', e); fallos += 1; })
   .finally(async () => {
     servidor.close();
-    await pool.end();
+    await cerrarPool();
     process.exit(fallos === 0 ? 0 : 1);
   });
