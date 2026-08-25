@@ -1,19 +1,28 @@
 /**
  * Fachada del ERP.
  *
- * El resto de la aplicación SOLO habla con este archivo; nunca con axios
- * ni con el catálogo mock directamente. Así, el día que se conecte Quiter
- * no hay que tocar controladores ni frontend.
+ * El resto de la aplicación SOLO habla con este archivo; nunca con el driver
+ * de SQL Server, ni con axios, ni con el catálogo simulado. Así, cambiar de
+ * origen de datos no obliga a tocar controladores ni frontend.
  *
- * Estrategia:
- *   1. Si QUITER_BASE_URL está configurado -> consulta Quiter.
- *   2. Si Quiter falla (timeout, 500, red caída) -> responde con el mock
- *      y marca origen = 'MOCK_FALLBACK' para que la UI avise al usuario.
- *   3. Si no está configurado -> mock directo (origen = 'MOCK').
+ * Orden de preferencia (el primero que esté configurado, gana):
+ *
+ *   1. SQL SERVER  — consulta directa a la base de Quiter (RECOMENDADO).
+ *                    Es el mismo camino que usa la app de Ventas.
+ *   2. API HTTP    — la API interna de refacciones (catosa-api), que ya tiene
+ *                   la conexión a Quiter. No pide credenciales nuevas.
+ *   3. MOCK        — catálogo simulado, para desarrollar y capacitar sin ERP.
+ *
+ * Si el origen configurado falla (red caída, servidor apagado), NO se tumba la
+ * operación del vendedor: se responde con el catálogo local y se marca el
+ * origen como *_FALLBACK para que la interfaz lo advierta con claridad.
  */
 import { env } from '../../config/env.js';
 import { buscarMock } from './catalogoMock.js';
 import { consultarExistenciasQuiter, quiterConfigurado } from './quiterClient.js';
+import {
+  consultarExistenciasSqlServer, probarSqlServer, sqlServerConfigurado,
+} from './sqlServerClient.js';
 
 // ── Caché en memoria muy simple (TTL corto) ─────────────────────────────────
 // Evita golpear el ERP en cada tecla del buscador del vendedor.
@@ -35,12 +44,24 @@ const guardarCache = (clave, valor) => {
   cache.set(clave, { expira: Date.now() + env.erp.cacheTtlSeg * 1000, valor });
 };
 
+/** Qué origen de datos está activo en esta instalación. */
+export function origenActivo() {
+  if (sqlServerConfigurado()) return 'SQLSERVER';
+  if (quiterConfigurado()) return 'QUITER_API';
+  return 'MOCK';
+}
+
+/** Respuesta de respaldo cuando el ERP no está disponible o no está configurado. */
+function respuestaMock(termino, almacen, aviso, origen) {
+  return { origen, almacen, articulos: buscarMock(termino, almacen), aviso };
+}
+
 /**
  * Consulta existencias de un SKU o término de búsqueda.
  *
  * @param {object} opciones
- * @param {string} opciones.termino  SKU exacto o texto parcial
- * @param {string} [opciones.almacen] clave de sucursal; por defecto la del .env
+ * @param {string} opciones.termino  número de parte exacto o texto parcial
+ * @param {string} [opciones.almacen] clave de almacén; por defecto la del .env
  * @returns {Promise<{origen:string, almacen:string, consultado_en:string, articulos:Array, aviso?:string}>}
  */
 export async function consultarExistencias({ termino, almacen }) {
@@ -52,28 +73,41 @@ export async function consultarExistencias({ termino, almacen }) {
 
   let resultado;
 
-  if (quiterConfigurado()) {
-    try {
-      const articulos = await consultarExistenciasQuiter(termino, alm);
-      resultado = { origen: 'QUITER', almacen: alm, articulos };
-    } catch (error) {
-      // No tumbamos la operación del vendedor si el ERP no responde:
-      // devolvemos el mock y avisamos claramente en la respuesta.
-      console.warn(`[ERP] Quiter no respondió (${error.message}). Usando catálogo local.`);
-      resultado = {
-        origen: 'MOCK_FALLBACK',
-        almacen: alm,
-        articulos: buscarMock(termino, alm),
-        aviso: 'No se pudo contactar al ERP Quiter; se muestran datos locales de respaldo.',
-      };
-    }
-  } else {
-    resultado = {
-      origen: 'MOCK',
-      almacen: alm,
-      articulos: buscarMock(termino, alm),
-      aviso: 'Integración con Quiter no configurada (QUITER_BASE_URL vacío).',
-    };
+  switch (origenActivo()) {
+    case 'SQLSERVER':
+      try {
+        const articulos = await consultarExistenciasSqlServer(termino, alm);
+        resultado = { origen: 'SQLSERVER', almacen: alm, articulos };
+      } catch (error) {
+        console.warn(`[ERP] SQL Server no respondió (${error.message}). Usando catálogo local.`);
+        resultado = respuestaMock(
+          termino, alm,
+          'No se pudo consultar la base de datos del ERP; se muestran datos locales de respaldo.',
+          'MOCK_FALLBACK',
+        );
+      }
+      break;
+
+    case 'QUITER_API':
+      try {
+        const articulos = await consultarExistenciasQuiter(termino, alm);
+        resultado = { origen: 'QUITER_API', almacen: alm, articulos };
+      } catch (error) {
+        console.warn(`[ERP] La API de refacciones no respondió (${error.message}). Usando catálogo local.`);
+        resultado = respuestaMock(
+          termino, alm,
+          'No se pudo contactar la API de refacciones; se muestran datos locales de respaldo.',
+          'MOCK_FALLBACK',
+        );
+      }
+      break;
+
+    default:
+      resultado = respuestaMock(
+        termino, alm,
+        'Sin conexión al ERP configurada: se muestra el catálogo de demostración.',
+        'MOCK',
+      );
   }
 
   resultado.consultado_en = new Date().toISOString();
@@ -92,9 +126,38 @@ export async function existenciaDeSku(sku, almacen) {
 }
 
 /** Estado de la integración, para el endpoint /api/health. */
-export const estadoErp = () => ({
-  configurado: quiterConfigurado(),
-  base_url: env.erp.baseUrl || null,
-  almacen_default: env.erp.almacenDefault,
-  cache_ttl_seg: env.erp.cacheTtlSeg,
-});
+export async function estadoErp() {
+  const origen = origenActivo();
+  const base = {
+    origen,
+    almacen_default: env.erp.almacenDefault,
+    cache_ttl_seg: env.erp.cacheTtlSeg,
+  };
+
+  if (origen === 'SQLSERVER') {
+    let conectado = false;
+    let error;
+    try {
+      conectado = await probarSqlServer();
+    } catch (e) {
+      error = e.message;
+    }
+    return {
+      ...base,
+      sql_server: {
+        host: env.erpSql.host,
+        base_datos: env.erpSql.database,
+        almacenes: env.erpSql.almacenes,
+        cifrado: env.erpSql.encrypt,
+        conectado,
+        ...(error ? { error } : {}),
+      },
+    };
+  }
+
+  if (origen === 'QUITER_API') {
+    return { ...base, api: { base_url: env.erp.baseUrl } };
+  }
+
+  return { ...base, aviso: 'Sin ERP configurado; el sistema usa el catálogo simulado.' };
+}

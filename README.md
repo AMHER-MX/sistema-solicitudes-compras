@@ -42,8 +42,8 @@ Abre <http://localhost:5173> y entra con cualquiera de estos usuarios
 | `comprador@demo.mx` | Comprador | Mesa de trabajo + dashboard |
 | `gerente@demo.mx` | Gerente | Todo |
 
-> `npm run smoke` (dentro de `/backend`) ejecuta una prueba automática que recorre
-> el flujo completo contra la base de datos y reporta cada validación.
+> `npm test` (dentro de `/backend`) ejecuta las pruebas automáticas: el adaptador
+> del ERP y el recorrido completo del flujo contra la base de datos.
 
 ---
 
@@ -81,7 +81,8 @@ sgc-compras/
 │   ├── package.json
 │   ├── scripts/
 │   │   ├── setupDb.js         # aplica los .sql (npm run db:setup)
-│   │   └── smokeTest.js       # prueba end-to-end de la API (npm run smoke)
+│   │   ├── smokeTest.js       # prueba end-to-end de la API (npm run smoke)
+│   │   └── testErpSql.js      # pruebas del adaptador de Quiter (npm run test:erp)
 │   └── src/
 │       ├── server.js          # punto de entrada
 │       ├── app.js             # construcción de la app Express
@@ -96,8 +97,9 @@ sgc-compras/
 │       ├── services/
 │       │   ├── solicitudes.service.js   # TODO el SQL vive aquí
 │       │   └── erp/
-│       │       ├── index.js             # fachada del ERP (caché + fallback)
-│       │       ├── quiterClient.js      # ← ajustar al conectar Quiter
+│       │       ├── index.js             # fachada: elige el origen de datos
+│       │       ├── sqlServerClient.js   # ← SQL Server de Quiter (producción)
+│       │       ├── quiterClient.js      # API REST de Quiter (si algún día existe)
 │       │       └── catalogoMock.js      # catálogo simulado de respaldo
 │       └── utils/
 │           ├── estatus.js     # máquina de estados del flujo
@@ -187,7 +189,7 @@ requieren el header `Authorization: Bearer <token>`.
 | `GET` | `/meta` | — | Estatus, prioridades y transiciones válidas. |
 | `POST` | `/auth/login` | — | Devuelve JWT + datos del usuario. |
 | `GET` | `/auth/yo` | todos | Perfil del token (revalidación al recargar). |
-| `GET` | `/productos/existencias?sku=XXX&almacen=SUC01` | todos | **Consulta al ERP.** `sku` acepta código o texto parcial. |
+| `GET` | `/productos/existencias?sku=XXX&almacen=101` | todos | **Consulta al ERP.** `sku` acepta código o texto parcial. |
 | `POST` | `/solicitudes` | Vendedor, Gerente | Crea encabezado + partidas + primer historial (`Pendiente`) en **una transacción**. |
 | `GET` | `/solicitudes` | todos | Filtros: `id_vendedor`, `prioridad`, `estatus`, `sucursal`, `desde`, `hasta`, `busqueda`, `limite`, `pagina`. |
 | `GET` | `/solicitudes/:id` | todos | Encabezado + partidas + bitácora + siguientes estatus posibles. |
@@ -244,46 +246,111 @@ curl -X PATCH http://localhost:4000/api/solicitudes/1/estatus \
 
 ## 6. Conexión con Quiter
 
-Mientras `QUITER_BASE_URL` esté vacío, el sistema responde con un **catálogo
-simulado** y lo avisa en pantalla (`"origen": "MOCK"`), así se puede operar y
+El sistema lee las existencias **directamente de la base de datos SQL Server de
+Quiter**, igual que la app de Ventas de refacciones (`catosa-api`). No hay una
+API intermedia: menos piezas que se puedan caer y menos superficie expuesta.
+
+Mientras no se configure la conexión, el sistema responde con un **catálogo
+simulado** y lo advierte en pantalla (`"origen": "MOCK"`), así se puede operar y
 capacitar desde el día uno.
 
-Para conectar el ERP de verdad:
+### 6.1 Crear el usuario de solo lectura
 
-1. En `backend/.env`:
+Este es el paso de seguridad importante, y hay que pedírselo a quien administra
+el servidor de Quiter. El sistema **solo necesita leer una tabla**:
 
-   ```env
-   QUITER_BASE_URL=http://servidor-quiter.interno:8080
-   QUITER_API_KEY=la-llave-que-les-den
-   QUITER_ALMACEN_DEFAULT=SUC01
-   ```
+```sql
+-- Ejecutar en el SQL Server de Quiter, una sola vez.
+CREATE LOGIN sgc_compras_ro WITH PASSWORD = 'UNA-CONTRASENA-LARGA-Y-UNICA';
 
-2. En `backend/src/services/erp/quiterClient.js` ajusta **solo dos cosas**:
+USE [NOMBRE_DE_LA_BASE_DE_QUITER];
+CREATE USER sgc_compras_ro FOR LOGIN sgc_compras_ro;
 
-   - `RUTA_EXISTENCIAS`: el path real del servicio de existencias.
-   - `mapearRespuesta()`: cómo se llaman los campos que devuelve Quiter (ya
-     acepta las variantes más comunes: `sku`/`codigo`/`CODIGO`,
-     `existencia`/`stock`/`disponible`, etc.).
+-- Permiso mínimo: leer el inventario de refacciones. Nada más.
+GRANT SELECT ON dbo.FTIGBI_PR TO sgc_compras_ro;
+```
 
-Nada más cambia: controladores, base de datos y frontend hablan siempre con la
-fachada `services/erp/index.js`, que además:
+Con eso, aunque alguien comprometiera este sistema, **no podría modificar ni
+borrar nada en Quiter**: el usuario no tiene con qué. No uses `sa` ni una cuenta
+de administrador "porque es más rápido" — es la diferencia entre un susto y una
+pérdida de datos.
 
-- **Cachea** la existencia unos segundos (`ERP_CACHE_TTL_SEG`) para no golpear al
-  ERP en cada tecla del buscador.
-- Si Quiter no responde, **no tumba la operación**: entrega el catálogo local y
-  marca `origen: "MOCK_FALLBACK"` con un aviso visible para el vendedor.
+### 6.2 Configurar el `.env`
 
-También hay que registrar en `sucursales.clave` la misma clave de almacén que usa
-Quiter, y en `clientes.codigo_erp` el código de cliente del ERP.
+```env
+ERPSQL_HOST=servidor-quiter.interno
+ERPSQL_PORT=1433
+ERPSQL_DATABASE=nombre_de_la_base
+ERPSQL_USER=sgc_compras_ro
+ERPSQL_PASSWORD=la-contrasena-del-paso-anterior
+ERPSQL_ENCRYPT=true
+ERPSQL_TRUST_CERT=true
+ERPSQL_ALMACENES=101,102,101LA,102LA
+ERP_ALMACEN_DEFAULT=101
+```
 
----
+Verifica con `GET /api/health`: debe responder `"origen": "SQLSERVER"` y
+`"conectado": true`.
+
+### 6.3 De dónde sale cada dato
+
+| Campo del sistema | Origen en Quiter |
+|---|---|
+| `sku_producto` | `FTIGBI_PR.ARTICULO` |
+| `descripcion` | `FTIGBI_PR.DES_ARTICULO` |
+| `existencia_real_almacen` | `FTIGBI_PR.EXIS_REALES` |
+| `precio_estimado` | `FTIGBI_PR.COSTO_MEDIO` |
+| `ubicacion` | `FTIGBI_PR.UBICACION` |
+| `sucursales.clave` | `FTIGBI_PR.ALMACEN` |
+
+Los almacenes salen de las columnas `ALMACEN` y `NOM_ALMACEN` de la propia tabla:
+
+| Clave | Sucursal | | Clave | No es sucursal de venta |
+|---|---|---|---|---|
+| `101` | Torreón | | `102LA` | Consigna Lala |
+| `102` | Gómez Palacio | | `104CU` | Cores usados Piedras Negras |
+| `103` | Monclova | | `201RE` | Rescates 24 horas Durango |
+| `104` | Piedras Negras | | | |
+| `201` | Durango | | | |
+| `202` | Poniente | | | |
+| `203` | Zacatecas | | | |
+
+Los tres de la derecha quedan fuera de `ERPSQL_ALMACENES` a propósito: no son
+puntos de venta y contarlos inflaría la existencia disponible.
+
+### 6.4 Dos errores a NO repetir
+
+El adaptador (`src/services/erp/sqlServerClient.js`) evita dos fallas reales que
+tumbaron el buscador de la app de Ventas. `npm run test:erp` las verifica como
+pruebas de regresión:
+
+1. **Comparar `ALMACEN` contra un número.** La columna es texto y contiene
+   valores como `'102LA'`; escribir `WHERE ALMACEN = 101` obliga a SQL Server a
+   convertir cada renglón a entero y la consulta truena con
+   *"Conversion failed when converting the varchar value '102LA' to data type int"*.
+   Va siempre entre comillas.
+
+2. **Olvidar los paréntesis del `OR`.** En `AND a LIKE @b OR c LIKE @b`, el `AND`
+   tiene precedencia y la búsqueda por descripción se escapa del filtro de
+   almacén, trayendo renglones de toda la empresa. Los paréntesis no son
+   opcionales.
+
+### 6.5 Si algún día Quiter publica una API REST
+
+El adaptador `src/services/erp/quiterClient.js` ya está listo para ese caso: se
+llena `QUITER_BASE_URL` en el `.env` y se ajusta el mapeo de campos. La fachada
+`src/services/erp/index.js` elige el origen automáticamente, con este orden de
+preferencia: **SQL Server → API HTTP → catálogo simulado**. Si el origen activo
+falla, no se cae la operación: responde con el catálogo local y marca
+`origen: "MOCK_FALLBACK"` para que el vendedor lo vea.
 
 ## 7. Pendientes para producción
 
 Esta es la primera versión funcional. Antes de liberarla conviene:
 
 - [ ] Cambiar `JWT_SECRET` por una cadena larga y aleatoria, y no subir `.env` al repo.
-- [ ] Conectar Quiter (sección 6) y validar contra existencias reales.
+- [ ] Crear el usuario de solo lectura en SQL Server y conectar Quiter (sección 6).
+- [ ] Confirmar qué clave de almacén corresponde a cada sucursal (sección 6.3).
 - [ ] Sustituir los usuarios de demo por los reales (o integrar el directorio de la empresa).
 - [ ] Notificación al vendedor cuando su solicitud cambia de estatus (correo o WhatsApp).
 - [ ] Exportar a Excel la Mesa de Trabajo y el top de faltantes.

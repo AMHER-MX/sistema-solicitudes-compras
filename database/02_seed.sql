@@ -10,10 +10,25 @@
 -- =============================================================================
 
 -- ---------- Sucursales -------------------------------------------------------
+-- `clave` = clave de ALMACÉN en Quiter (columna ALMACEN de la tabla FTIGBI_PR).
+-- Es el dato con el que el sistema consulta existencias.
+--
+-- Estos valores NO son inventados: salen de las columnas ALMACEN y NOM_ALMACEN
+-- de la propia tabla FTIGBI_PR, leídas el 21/08/2026.
+--
+-- Quiter tiene además tres almacenes que NO son sucursales de venta y por eso
+-- quedan fuera de esta tabla:
+--     102LA  CONSIGNA LALA                  (material en consignación)
+--     104CU  CORES USADOS PIEDRAS NEGRAS    (cores para devolución)
+--     201RE  RESCATES 24 HORAS DURANGO      (rescates)
 INSERT INTO sucursales (clave, nombre, ciudad) VALUES
-    ('SUC01', 'Matriz Monterrey',   'Monterrey'),
-    ('SUC02', 'Sucursal Saltillo',  'Saltillo'),
-    ('SUC03', 'Sucursal Guadalupe', 'Guadalupe')
+    ('101', 'Refacciones Torreón',        'Torreón'),
+    ('102', 'Refacciones Gómez Palacio',  'Gómez Palacio'),
+    ('103', 'Refacciones Monclova',       'Monclova'),
+    ('104', 'Refacciones Piedras Negras', 'Piedras Negras'),
+    ('201', 'Refacciones Durango',        'Durango'),
+    ('202', 'Refacciones Poniente',       'Poniente'),
+    ('203', 'Refacciones Zacatecas',      'Zacatecas')
 ON CONFLICT (clave) DO NOTHING;
 
 -- ---------- Clientes ---------------------------------------------------------

@@ -1,68 +1,83 @@
 /**
- * Cliente HTTP hacia el ERP Quiter.
+ * Cliente HTTP hacia la API interna de refacciones (catosa-api).
  *
  * ─────────────────────────────────────────────────────────────────────────────
- *  ÚNICO ARCHIVO A AJUSTAR CUANDO SE CONECTE QUITER DE VERDAD
+ *  ORIGEN "SIN CREDENCIALES NUEVAS"
  * ─────────────────────────────────────────────────────────────────────────────
- * Solo hay dos cosas que cambiar:
- *   1. RUTA_EXISTENCIAS  -> el path real que expone el middleware de Quiter.
- *   2. mapearRespuesta() -> cómo se llaman los campos que devuelve Quiter.
+ * Ese servidor ya tiene la conexión a la base de datos de Quiter, así que este
+ * sistema puede leer existencias sin abrir una segunda conexión al ERP ni pedir
+ * un usuario de base de datos aparte.
  *
- * Todo lo demás (timeouts, headers, manejo de error, caché) ya está resuelto.
+ * Requiere el endpoint `GET /api/existencias`, que devuelve la existencia
+ * DESGLOSADA POR ALMACÉN. No sirve `/api/productos`: ese suma todos los
+ * almacenes en una sola cifra y no permite saber si es MI sucursal la que está
+ * en cero, que es justo lo que decide si se compra o se pide un traspaso.
+ *
+ * Configuración en el .env:
+ *   QUITER_BASE_URL=https://api.catosaapps.lat
  */
 import axios from 'axios';
 import { env } from '../../config/env.js';
 
-// Path del servicio de existencias en el middleware/API de Quiter.
-const RUTA_EXISTENCIAS = '/api/v1/refacciones/existencias';
+// Path del servicio de existencias por almacén.
+const RUTA_EXISTENCIAS = '/api/existencias';
 
-/** Instancia de axios reutilizable con timeout y credenciales. */
+/** Instancia de axios reutilizable con timeout y credenciales opcionales. */
 const http = axios.create({
   baseURL: env.erp.baseUrl || undefined,
   timeout: env.erp.timeoutMs,
   headers: {
-    'Content-Type': 'application/json',
+    Accept: 'application/json',
     ...(env.erp.apiKey ? { Authorization: `Bearer ${env.erp.apiKey}` } : {}),
   },
 });
 
 /**
- * Traduce la respuesta de Quiter al contrato interno del sistema.
- * Se aceptan varios nombres de campo porque cada instalación de Quiter
- * suele publicar el servicio con su propia nomenclatura.
+ * Normaliza un artículo al contrato interno del sistema.
+ * Se aceptan varios nombres de campo para tolerar cambios en el otro extremo.
  */
-function mapearRespuesta(fila, almacen) {
+function mapearArticulo(a, almacen) {
+  const otras = Array.isArray(a.existencia_otras_sucursales)
+    ? a.existencia_otras_sucursales
+    : (a.otros_almacenes ?? []);
+
   return {
-    sku:            fila.sku ?? fila.codigo ?? fila.codigo_articulo ?? fila.CODIGO ?? '',
-    descripcion:    fila.descripcion ?? fila.desc ?? fila.DESCRIPCION ?? '',
-    linea:          fila.linea ?? fila.familia ?? null,
-    precio_lista:   Number(fila.precio ?? fila.precio_lista ?? fila.PRECIO ?? 0),
-    almacen:        fila.almacen ?? almacen,
-    existencia:     Number(fila.existencia ?? fila.stock ?? fila.disponible ?? fila.EXISTENCIA ?? 0),
-    existencia_otras_sucursales: Array.isArray(fila.otros_almacenes)
-      ? fila.otros_almacenes.map((o) => ({
-          almacen: o.almacen ?? o.clave,
-          existencia: Number(o.existencia ?? o.stock ?? 0),
-        }))
-      : [],
+    sku: (a.sku ?? a.Parte ?? a.ARTICULO ?? '').toString().trim(),
+    descripcion: (a.descripcion ?? a.Descripcion ?? a.DES_ARTICULO ?? '').toString().trim(),
+    linea: a.linea ?? null,
+    precio_lista: Number(a.precio_lista ?? a.Precio ?? a.COSTO_MEDIO ?? 0),
+    ubicacion: a.ubicacion ?? a.Ubicacion ?? null,
+    almacen: a.almacen ?? almacen,
+    existencia: Number(a.existencia ?? a.Existencia ?? 0),
+    existencia_otras_sucursales: otras
+      .map((o) => ({
+        almacen: (o.almacen ?? o.clave ?? '').toString().trim(),
+        nombre: o.nombre ?? null,
+        existencia: Number(o.existencia ?? o.stock ?? 0),
+      }))
+      .filter((o) => o.existencia > 0),
   };
 }
 
-/** ¿Está configurada la integración? Si no, el servicio usará el mock. */
+/** ¿Está configurada la integración por HTTP? */
 export const quiterConfigurado = () => Boolean(env.erp.baseUrl);
 
 /**
- * Consulta existencias en Quiter.
+ * Consulta existencias por número de parte o descripción.
+ *
  * @param {string} termino  SKU o texto de búsqueda
- * @param {string} almacen  clave de almacén/sucursal
+ * @param {string} almacen  clave de almacén de la sucursal que consulta
  * @returns {Promise<Array>} artículos en el formato interno
  */
 export async function consultarExistenciasQuiter(termino, almacen) {
   const { data } = await http.get(RUTA_EXISTENCIAS, {
-    params: { q: termino, almacen },
+    params: { sku: termino, almacen },
   });
 
-  // Quiter puede responder un arreglo directo o envuelto en { data: [...] }.
-  const filas = Array.isArray(data) ? data : (data?.data ?? data?.items ?? []);
-  return filas.map((f) => mapearRespuesta(f, almacen));
+  // Se acepta un arreglo directo o un objeto con la lista dentro.
+  const articulos = Array.isArray(data)
+    ? data
+    : (data?.articulos ?? data?.data ?? data?.items ?? []);
+
+  return articulos.map((a) => mapearArticulo(a, almacen));
 }

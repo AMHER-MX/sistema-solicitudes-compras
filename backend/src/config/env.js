@@ -33,12 +33,30 @@ export const env = {
     expiresIn: process.env.JWT_EXPIRES_IN || '8h',
   },
 
+  // ── ERP por API HTTP (opcional) ───────────────────────────────────────────
   erp: {
     baseUrl: (process.env.QUITER_BASE_URL || '').trim(),
     apiKey: (process.env.QUITER_API_KEY || '').trim(),
     timeoutMs: num(process.env.QUITER_TIMEOUT_MS, 5000),
-    almacenDefault: process.env.QUITER_ALMACEN_DEFAULT || 'SUC01',
+    almacenDefault: process.env.ERP_ALMACEN_DEFAULT || process.env.QUITER_ALMACEN_DEFAULT || '101',
     cacheTtlSeg: num(process.env.ERP_CACHE_TTL_SEG, 30),
+  },
+
+  // ── ERP por SQL Server (origen recomendado en producción) ─────────────────
+  erpSql: {
+    host: (process.env.ERPSQL_HOST || '').trim(),
+    port: num(process.env.ERPSQL_PORT, 1433),
+    database: (process.env.ERPSQL_DATABASE || '').trim(),
+    user: (process.env.ERPSQL_USER || '').trim(),
+    password: process.env.ERPSQL_PASSWORD || '',
+    encrypt: bool(process.env.ERPSQL_ENCRYPT, true),
+    trustServerCertificate: bool(process.env.ERPSQL_TRUST_CERT, true),
+    timeoutMs: num(process.env.ERPSQL_TIMEOUT_MS, 15000),
+    // Almacenes de refacciones a considerar, separados por coma.
+    almacenes: (process.env.ERPSQL_ALMACENES || '101,102,103,104,201,202,203')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   },
 };
 

@@ -7,6 +7,7 @@ import { crearApp } from './app.js';
 import { env } from './config/env.js';
 import { pool, probarConexion } from './config/db.js';
 import { estadoErp } from './services/erp/index.js';
+import { cerrarPoolSqlServer } from './services/erp/sqlServerClient.js';
 
 const app = crearApp();
 
@@ -16,8 +17,15 @@ const servidor = app.listen(env.port, async () => {
   console.log(` Entorno    : ${env.nodeEnv}`);
   console.log(` CORS       : ${env.corsOrigin.join(', ')}`);
 
-  const erp = estadoErp();
-  console.log(` ERP Quiter : ${erp.configurado ? erp.base_url : 'NO configurado (usando catálogo simulado)'}`);
+  const erp = await estadoErp();
+  const descripcionErp = {
+    SQLSERVER: () => `SQL Server ${erp.sql_server.host}/${erp.sql_server.base_datos}` +
+                     ` — almacenes ${erp.sql_server.almacenes.join(', ')}` +
+                     ` — ${erp.sql_server.conectado ? 'conectado' : `SIN CONEXIÓN (${erp.sql_server.error})`}`,
+    QUITER_API: () => `API ${erp.api.base_url}`,
+    MOCK: () => 'NO configurado (usando catálogo simulado)',
+  }[erp.origen];
+  console.log(` ERP        : ${descripcionErp()}`);
 
   try {
     const hora = await probarConexion();
@@ -33,7 +41,7 @@ const servidor = app.listen(env.port, async () => {
 const cerrar = (senal) => async () => {
   console.log(`\n[${senal}] Cerrando servidor...`);
   servidor.close(async () => {
-    await pool.end();
+    await Promise.allSettled([pool.end(), cerrarPoolSqlServer()]);
     process.exit(0);
   });
 };

@@ -23,14 +23,15 @@ DROP TABLE IF EXISTS sucursales          CASCADE;
 -- Sucursales / agencias de la distribuidora.
 CREATE TABLE sucursales (
     id          SERIAL       PRIMARY KEY,
-    clave       VARCHAR(20)  NOT NULL UNIQUE,   -- clave usada en el ERP Quiter
+    clave       VARCHAR(20)  NOT NULL UNIQUE,   -- clave de ALMACÉN en Quiter (FTIGBI_PR.ALMACEN)
     nombre      VARCHAR(120) NOT NULL,
     ciudad      VARCHAR(80),
     activo      BOOLEAN      NOT NULL DEFAULT TRUE,
     creado_en   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON COLUMN sucursales.clave IS 'Clave de sucursal equivalente en el ERP (Quiter)';
+COMMENT ON COLUMN sucursales.clave IS
+  'Clave de almacén en Quiter (columna ALMACEN de FTIGBI_PR): 101, 102, 101LA, 102LA';
 
 -- Clientes a los que se les cotiza / vende el material solicitado.
 CREATE TABLE clientes (

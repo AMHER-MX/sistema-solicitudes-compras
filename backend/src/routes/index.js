@@ -17,7 +17,12 @@ const router = Router();
 /** Chequeo de salud: BD + integración ERP. Útil para monitoreo. */
 router.get('/health', asyncHandler(async (_req, res) => {
   const ahora = await probarConexion();
-  res.json({ ok: true, servicio: 'sgc-compras-api', bd: { conectada: true, hora: ahora }, erp: estadoErp() });
+  res.json({
+    ok: true,
+    servicio: 'sgc-compras-api',
+    bd: { conectada: true, hora: ahora },
+    erp: await estadoErp(),
+  });
 }));
 
 /** Metadatos que el frontend usa para pintar selects y badges. */

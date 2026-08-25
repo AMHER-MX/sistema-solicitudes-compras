@@ -46,6 +46,7 @@ async function main() {
   const salud = await api('/health');
   check('GET /health responde 200', salud.status === 200);
   check('BD conectada', salud.data?.bd?.conectada === true);
+  check('Reporta el origen del ERP', Boolean(salud.data?.erp?.origen), `(${salud.data?.erp?.origen})`);
 
   console.log('\n== Autenticación ==');
   const malo = await api('/auth/login', { metodo: 'POST', body: { email: 'vendedor@demo.mx', password: 'incorrecta' } });
@@ -64,7 +65,7 @@ async function main() {
   console.log('\n== Existencias (ERP) ==');
   const exSinStock = await api('/productos/existencias?sku=BAL-8890', { token: tokenVendedor });
   check('Consulta existencias 200', exSinStock.status === 200);
-  check('BAL-8890 sin existencia en SUC01',
+  check('BAL-8890 sin existencia en el almacén 101',
     exSinStock.data?.articulos?.[0]?.existencia === 0,
     `(origen: ${exSinStock.data?.origen})`);
 
@@ -169,7 +170,7 @@ async function main() {
 
   console.log('\n== Catálogos ==');
   const suc = await api('/catalogos/sucursales', { token: tokenVendedor });
-  check('Lista sucursales', suc.data?.sucursales?.length === 3);
+  check('Lista las 7 sucursales de Quiter', suc.data?.sucursales?.length === 7);
   const cli = await api('/catalogos/clientes?q=norte', { token: tokenVendedor });
   check('Busca clientes por texto', cli.data?.clientes?.length === 1);
 
