@@ -1,4 +1,4 @@
-<#
+﻿<#
     Pruebas de desplegar-servidor.ps1.
 
         pwsh -File scripts\probar-desplegar.ps1

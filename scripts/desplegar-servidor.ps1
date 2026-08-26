@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Despliega el Sistema de Solicitudes de Compras en el servidor de la empresa.
 
@@ -442,31 +442,71 @@ try {
 # ─────────────────────────────────────────────────────────────────────────────
 Escribir-Titulo 'Base de datos'
 # ─────────────────────────────────────────────────────────────────────────────
-$estado = $null
-Push-Location $rutaBackend
-try {
-    $salida = (& node scripts/estadoDb.js 2>$null | Select-Object -Last 1)
-    if ($salida) { $estado = $salida | ConvertFrom-Json }
-} catch {
-    Escribir-Aviso "No se pudo diagnosticar la base: $($_.Exception.Message)"
-} finally { Pop-Location }
+<#
+    El diagnóstico corre con Node y necesita dos cosas que en una máquina
+    recién preparada todavía no existen: el .env (para saber a dónde conectarse)
+    y las dependencias (para tener el driver de SQL Server).
 
-if (-not $estado) {
-    Detener 'No se obtuvo respuesta del diagnóstico de la base. Revisa backend\.env.'
+    En el despliegue de verdad ya están, porque los pasos 3 y 4 van antes. En
+    modo revisión no, y eso NO es un error: es lo normal la primera vez. Por
+    eso aquí se dice y se sigue, en lugar de detener la revisión —que existe
+    justamente para ver el panorama completo antes de tocar nada.
+#>
+$estado = $null
+$faltaEnv  = -not (Test-Path $rutaEnv)
+$faltaDeps = -not (Test-Path (Join-Path $rutaBackend 'node_modules'))
+
+if ($faltaEnv -or $faltaDeps) {
+    $queFalta = @()
+    if ($faltaEnv)  { $queFalta += 'el archivo .env' }
+    if ($faltaDeps) { $queFalta += 'las dependencias' }
+    $listado = $queFalta -join ' y '
+
+    if ($SoloRevisar) {
+        Escribir-Dato "Todavía no se puede consultar la base: falta $listado."
+        Escribir-Dato 'Es lo normal en una instalación nueva. El despliegue lo resuelve en los pasos 3 y 4.'
+    } else {
+        Detener "No se puede consultar la base porque falta $listado."
+    }
+} else {
+    Push-Location $rutaBackend
+    try {
+        # La salida de error se guarda: si Node truena, el mensaje es lo único
+        # que dice por qué, y perderlo deja al operador sin nada que buscar.
+        $errores = Join-Path ([System.IO.Path]::GetTempPath()) 'sgc-estado-db.err'
+        $salida = (& node scripts/estadoDb.js 2>$errores | Select-Object -Last 1)
+        if ($salida) {
+            $estado = $salida | ConvertFrom-Json
+        } else {
+            Escribir-Aviso 'El diagnóstico de la base no devolvió nada.'
+            if (Test-Path $errores) {
+                foreach ($linea in (Get-Content $errores | Select-Object -First 4)) {
+                    Escribir-Dato $linea
+                }
+            }
+        }
+    } catch {
+        Escribir-Aviso "No se pudo diagnosticar la base: $($_.Exception.Message)"
+    } finally { Pop-Location }
 }
 
-Escribir-Dato ("Servidor: " + $estado.servidor + "   Base: " + $estado.base_datos)
+if ($estado) {
+    Escribir-Dato ("Servidor: " + $estado.servidor + "   Base: " + $estado.base_datos)
+}
 
-if (-not $estado.conecta) {
+if ($estado -and -not $estado.conecta) {
     Write-Host ''
     Write-Host "     No hay conexión con SQL Server: $($estado.error)" -ForegroundColor Red
     Write-Host '     Revisa DB_HOST, DB_USER y DB_PASSWORD en backend\.env,' -ForegroundColor Red
     Write-Host '     y que el servidor acepte conexiones TCP/IP en el puerto 1433.' -ForegroundColor Red
-    exit 1
+    if (-not $SoloRevisar) { exit 1 }
+    Escribir-Aviso 'Sin base no se puede desplegar. Arregla eso antes de correrlo en serio.'
+    $estado = $null
+} elseif ($estado) {
+    Escribir-Ok 'Conexión con SQL Server correcta.'
 }
-Escribir-Ok 'Conexión con SQL Server correcta.'
 
-switch ($estado.accion_sugerida) {
+if ($estado) { switch ($estado.accion_sugerida) {
 
     'crear_base' {
         Escribir-Aviso "La base $($estado.base_datos) no existe todavía."
@@ -500,9 +540,9 @@ console.log('creada');
             Detener 'Sin la base no se puede continuar. Créala a mano y vuelve a correr esto.'
         }
     }
-}
+} }
 
-if ($estado.accion_sugerida -eq 'instalar_esquema') {
+if ($estado -and $estado.accion_sugerida -eq 'instalar_esquema') {
     Escribir-Dato 'La base está vacía: se instala el esquema desde cero.'
     if (-not $SoloRevisar) {
         Push-Location $rutaBackend
@@ -513,7 +553,7 @@ if ($estado.accion_sugerida -eq 'instalar_esquema') {
         } finally { Pop-Location }
     }
 }
-elseif ($estado.accion_sugerida -eq 'migrar') {
+elseif ($estado -and $estado.accion_sugerida -eq 'migrar') {
     Escribir-Dato ("Base en uso: {0} usuario(s), {1} solicitud(es)." -f $estado.usuarios, $estado.solicitudes)
     Escribir-Dato 'Solo se aplican migraciones. No se borra nada.'
     if (-not $SoloRevisar) {
@@ -526,7 +566,7 @@ elseif ($estado.accion_sugerida -eq 'migrar') {
     }
 }
 
-if ($estado.cuentas_demo_activas -gt 0) {
+if ($estado -and $estado.cuentas_demo_activas -gt 0) {
     Escribir-Aviso ("Hay {0} cuenta(s) de prueba @demo.mx activas. Su contraseña está escrita en el README: desactívalas desde la pantalla Usuarios antes de publicar." -f $estado.cuentas_demo_activas)
 }
 
