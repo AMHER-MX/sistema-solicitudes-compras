@@ -59,6 +59,10 @@ await servicio.metricasGerencia({ dias: 90, sucursal: 2 });
 // Estas rutas deciden qué hacer según lo que devuelve una consulta previa
 // ("¿ya existe el correo?", "¿cuántos Gerentes quedan?"), así que hay que
 // darles respuestas creíbles o nunca llegarían al INSERT / UPDATE.
+// El rol que la base "devuelve" para el usuario 7. Se cambia a Gerente más
+// abajo para poder recorrer las consultas que solo se disparan con Gerentes.
+let rolDelObjetivo = 'Vendedor';
+
 const PASSWORD_ACTUAL = 'ClaveTemporal77';
 const HASH_ACTUAL = await bcrypt.hash(PASSWORD_ACTUAL, 4); // 4 rondas: es una prueba
 
@@ -70,7 +74,7 @@ definirRespuestaEnsayo((sql) => {
     return [{ id: 7, nombre: 'Ana Ríos', email: 'ana.rios@amher.com.mx', password_hash: HASH_ACTUAL }];
   }
   if (/FROM\s+usuarios\s+u/i.test(sql)) {
-    return [{ id: 7, nombre: 'Ana Ríos', email: 'ana.rios@amher.com.mx', rol: 'Vendedor', activo: true }];
+    return [{ id: 7, nombre: 'Ana Ríos', email: 'ana.rios@amher.com.mx', rol: rolDelObjetivo, activo: true }];
   }
   return undefined;
 });
@@ -83,6 +87,14 @@ await usuarios.crearUsuario(
   1,
 );
 await usuarios.actualizarUsuario(7, { nombre: 'Ana Ríos Vega', rol: 'Comprador', sucursal_id: 2, activo: false }, 1);
+// Desactivar a un Gerente dispara la consulta que cuenta cuántos quedan. Es la
+// única forma de que ese SQL pase por aquí, y esa consulta también compara una
+// columna booleana: si no se ejercita, nadie la revisa hasta que truene.
+rolDelObjetivo = 'Gerente';
+await usuarios.actualizarUsuario(7, { activo: false }, 1);
+await usuarios.actualizarUsuario(7, { rol: 'Comprador' }, 1);
+rolDelObjetivo = 'Vendedor';
+
 await usuarios.restablecerPassword(7, 1);
 await usuarios.cambiarPasswordPropia(7, PASSWORD_ACTUAL, 'MiClaveNueva2026');
 await usuarios.cuentasDemoActivas();
@@ -155,6 +167,22 @@ for (const [patron, nombre] of restosDeSqlServer) {
   check(`Sin ${nombre}`, culpables.length === 0,
     culpables.length ? `(${culpables[0].slice(0, 80).replace(/\s+/g, ' ')}...)` : '');
 }
+
+// En SQL Server una bandera es BIT y se compara contra 1 o 0. En PostgreSQL es
+// BOOLEAN, y `activo = 1` no es que devuelva falso: revienta la consulta entera
+// ("operator does not exist: boolean = integer"). Esto se coló hasta producción
+// una vez —en el cambio de contraseña, que nadie prueba hasta que hace falta—,
+// así que ahora cada columna booleana del esquema se vigila por nombre.
+const COLUMNAS_BOOLEANAS = ['activo', 'debe_cambiar_password'];
+const comparacionNumerica = new RegExp(
+  `\\b(${COLUMNAS_BOOLEANAS.join('|')})\\s*(=|<>|!=)\\s*[01]\\b`, 'i',
+);
+const banderasMalComparadas = sqlEmitido.filter((s) => comparacionNumerica.test(s));
+check('Las banderas booleanas no se comparan contra 1 ni 0',
+  banderasMalComparadas.length === 0,
+  banderasMalComparadas.length
+    ? `(${comparacionNumerica.exec(banderasMalComparadas[0])[0]})`
+    : '');
 
 console.log('\n== Construcciones esperadas de PostgreSQL ==');
 

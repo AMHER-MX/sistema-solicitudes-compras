@@ -319,7 +319,9 @@ export async function restablecerPassword(id, actorId) {
  */
 export async function cambiarPasswordPropia(id, passwordActual, passwordNueva) {
   const fila = await queryUno(
-    'SELECT id, nombre, email, password_hash FROM usuarios WHERE id = @id AND activo = 1',
+    // `activo` es BOOLEAN: compararlo contra 1 revienta en PostgreSQL
+    // ("operator does not exist: boolean = integer"). Se usa la columna sola.
+    'SELECT id, nombre, email, password_hash FROM usuarios WHERE id = @id AND activo',
     { id: Number(id) },
   );
   if (!fila) throw notFound('Usuario no encontrado');

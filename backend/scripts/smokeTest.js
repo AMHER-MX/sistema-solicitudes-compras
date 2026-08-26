@@ -230,6 +230,73 @@ async function main() {
     `(${dash.data?.tiempo_atencion?.horas_promedio} h)`);
   check('Cuenta urgentes abiertas', typeof dash.data?.totales?.urgentes_abiertas === 'number');
 
+  // Este bloque existe por un error que llegó a producción: la consulta del
+  // cambio de contraseña decía `activo = 1` —correcto en SQL Server, veneno en
+  // PostgreSQL— y nadie se enteró hasta que la primera persona real intentó
+  // entrar y le salió "Error interno del servidor". Es el único camino que solo
+  // se recorre una vez por cuenta, así que es justo el que hay que probar solo.
+  console.log('\n== Alta de cuenta y primera entrada ==');
+  const correoNuevo = `prueba.${Date.now()}@amher.com.mx`;
+  const alta = await api('/usuarios', {
+    metodo: 'POST',
+    token: tokenGerente,
+    body: { nombre: 'Cuenta De Prueba', email: correoNuevo, rol: 'Comprador' },
+  });
+  check('Gerente da de alta una cuenta -> 201', alta.status === 201);
+  const passwordTemporal = alta.data?.passwordTemporal;
+  check('El alta devuelve una contraseña temporal', typeof passwordTemporal === 'string' && passwordTemporal.length >= 8);
+
+  const primerLogin = await api('/auth/login', {
+    metodo: 'POST',
+    body: { email: correoNuevo, password: passwordTemporal },
+  });
+  check('Entra con la contraseña temporal -> 200', primerLogin.status === 200);
+  const tokenNuevo = primerLogin.data?.token;
+
+  const bloqueado = await api('/solicitudes', { token: tokenNuevo });
+  check('Con contraseña temporal no puede usar el sistema -> 403',
+    bloqueado.status === 403 && bloqueado.data?.codigo === 'PASSWORD_TEMPORAL',
+    `(${bloqueado.status} ${bloqueado.data?.codigo ?? ''})`);
+
+  const NUEVA = 'ClaveDeCarlos2026';
+  const conActualMal = await api('/auth/cambiar-password', {
+    metodo: 'POST',
+    token: tokenNuevo,
+    body: { passwordActual: 'noEsLaQueEs', passwordNueva: NUEVA },
+  });
+  check('Con la temporal equivocada no deja cambiarla -> 400', conActualMal.status === 400,
+    `(${conActualMal.status})`);
+
+  const cambio = await api('/auth/cambiar-password', {
+    metodo: 'POST',
+    token: tokenNuevo,
+    body: { passwordActual: passwordTemporal, passwordNueva: NUEVA },
+  });
+  check('Cambia su contraseña -> 200', cambio.status === 200,
+    cambio.status === 200 ? '' : `(${cambio.status} ${cambio.data?.error ?? ''})`);
+
+  const yaPuede = await api('/solicitudes', { token: tokenNuevo });
+  check('Después del cambio ya entra al sistema -> 200', yaPuede.status === 200,
+    `(${yaPuede.status})`);
+
+  const conNueva = await api('/auth/login', {
+    metodo: 'POST',
+    body: { email: correoNuevo, password: NUEVA },
+  });
+  check('Vuelve a entrar con la contraseña nueva -> 200', conNueva.status === 200);
+
+  const conVieja = await api('/auth/login', {
+    metodo: 'POST',
+    body: { email: correoNuevo, password: passwordTemporal },
+  });
+  check('La temporal ya no sirve -> 401', conVieja.status === 401);
+
+  // Se desactiva para no dejar basura si alguien corre esto contra una base real.
+  const baja = await api(`/usuarios/${alta.data?.usuario?.id}`, {
+    metodo: 'PATCH', token: tokenGerente, body: { activo: false },
+  });
+  check('Se puede desactivar la cuenta de prueba', baja.status === 200);
+
   console.log('\n== Catálogos ==');
   const suc = await api('/catalogos/sucursales', { token: tokenVendedor });
   check('Lista las 7 sucursales de Quiter', suc.data?.sucursales?.length === 7);
