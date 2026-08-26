@@ -1,10 +1,16 @@
 /**
- * Pantalla de acceso. Incluye accesos rápidos con los usuarios de demostración
- * para poder probar los tres roles sin teclear credenciales.
+ * Pantalla de acceso.
+ *
+ * Los accesos rápidos de demostración solo aparecen cuando la interfaz corre
+ * en modo desarrollo (`npm run dev`). En la versión compilada que se publica
+ * en el servidor no se muestran ni se precargan: anunciar en la pantalla de
+ * entrada que existe un usuario "gerente" con contraseña conocida sería
+ * regalarle el sistema a cualquiera que abra la página.
  */
 import { useState } from 'react';
-import { LogIn, Package, ShieldCheck } from 'lucide-react';
+import { LogIn, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
+import { LogoCatosa } from '../components/LogoCatosa.jsx';
 import { Alerta, Boton, Campo, Input, Tarjeta } from '../components/ui/Primitivos.jsx';
 
 const DEMO = [
@@ -13,10 +19,13 @@ const DEMO = [
   { rol: 'Gerente',   email: 'gerente@demo.mx',   descripcion: 'Dashboard' },
 ];
 
+/** true solo con `npm run dev`; en el build de producción es false. */
+const EN_DESARROLLO = import.meta.env.DEV;
+
 export default function Login() {
   const { entrar } = useAuth();
-  const [email, setEmail] = useState('vendedor@demo.mx');
-  const [password, setPassword] = useState('demo1234');
+  const [email, setEmail] = useState(EN_DESARROLLO ? 'vendedor@demo.mx' : '');
+  const [password, setPassword] = useState(EN_DESARROLLO ? 'demo1234' : '');
   const [error, setError] = useState('');
   const [cargando, setCargando] = useState(false);
 
@@ -38,9 +47,7 @@ export default function Login() {
       <div className="w-full max-w-sm">
         {/* Identidad del sistema */}
         <div className="mb-6 flex flex-col items-center text-center">
-          <span className="mb-3 grid size-12 place-items-center rounded-xl bg-brand text-white">
-            <Package size={22} />
-          </span>
+          <LogoCatosa className="mb-5 w-52 text-ink" />
           <h1 className="text-lg font-semibold tracking-tight text-ink">
             Solicitudes de Compras
           </h1>
@@ -80,7 +87,8 @@ export default function Login() {
             </Boton>
           </form>
 
-          {/* Accesos de demostración */}
+          {/* Accesos de demostración: solo en desarrollo */}
+          {EN_DESARROLLO && (
           <div className="mt-5 border-t border-hairline pt-4">
             <p className="mb-2 flex items-center gap-1.5 text-[11px] font-medium text-muted">
               <ShieldCheck size={13} /> Usuarios de prueba (password: demo1234)
@@ -100,6 +108,7 @@ export default function Login() {
               ))}
             </div>
           </div>
+          )}
         </Tarjeta>
       </div>
     </div>

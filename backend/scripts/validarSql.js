@@ -14,8 +14,10 @@
  */
 process.env.SGC_DRY_RUN = '1';
 
-const { sqlEmitido } = await import('../src/config/db.js');
+const { sqlEmitido, definirRespuestaEnsayo } = await import('../src/config/db.js');
 const servicio = await import('../src/services/solicitudes.service.js');
+const usuarios = await import('../src/services/usuarios.service.js');
+const bcrypt = (await import('bcryptjs')).default;
 
 let fallos = 0;
 const check = (nombre, condicion, extra = '') => {
@@ -53,8 +55,42 @@ await servicio.cambiarEstatus({
 await servicio.metricasGerencia({ dias: 30 });
 await servicio.metricasGerencia({ dias: 90, sucursal: 2 });
 
+// ─── Administración de usuarios ─────────────────────────────────────────────
+// Estas rutas deciden qué hacer según lo que devuelve una consulta previa
+// ("¿ya existe el correo?", "¿cuántos Gerentes quedan?"), así que hay que
+// darles respuestas creíbles o nunca llegarían al INSERT / UPDATE.
+const PASSWORD_ACTUAL = 'ClaveTemporal77';
+const HASH_ACTUAL = await bcrypt.hash(PASSWORD_ACTUAL, 4); // 4 rondas: es una prueba
+
+definirRespuestaEnsayo((sql) => {
+  if (/FROM\s+dbo\.usuarios\s+WHERE\s+email\s*=\s*@email/i.test(sql)) return [];          // el correo está libre
+  if (/COUNT\(\*\)\s+AS\s+total/i.test(sql)) return [{ total: 3 }];                        // hay más Gerentes
+  if (/FROM\s+dbo\.sucursales\s+WHERE\s+id\s*=\s*@id/i.test(sql)) return [{ id: 1 }];      // la sucursal existe
+  if (/password_hash\s+FROM\s+dbo\.usuarios/i.test(sql)) {
+    return [{ id: 7, nombre: 'Ana Ríos', email: 'ana.rios@amher.com.mx', password_hash: HASH_ACTUAL }];
+  }
+  if (/FROM\s+dbo\.usuarios\s+u/i.test(sql)) {
+    return [{ id: 7, nombre: 'Ana Ríos', email: 'ana.rios@amher.com.mx', rol: 'Vendedor', activo: true }];
+  }
+  return undefined;
+});
+
+await usuarios.listarUsuarios({});
+await usuarios.listarUsuarios({ q: "O'Brien", rol: 'Comprador', activo: true });
+await usuarios.obtenerUsuario(7);
+await usuarios.crearUsuario(
+  { nombre: 'Ana Ríos', email: 'ana.rios@amher.com.mx', rol: 'Vendedor', sucursal_id: 1 },
+  1,
+);
+await usuarios.actualizarUsuario(7, { nombre: 'Ana Ríos Vega', rol: 'Comprador', sucursal_id: 2, activo: false }, 1);
+await usuarios.restablecerPassword(7, 1);
+await usuarios.cambiarPasswordPropia(7, PASSWORD_ACTUAL, 'MiClaveNueva2026');
+await usuarios.cuentasDemoActivas();
+
+definirRespuestaEnsayo(null);
+
 console.log(`  ${sqlEmitido.length} consultas capturadas`);
-check('Se generó SQL para todas las operaciones', sqlEmitido.length >= 15);
+check('Se generó SQL para todas las operaciones', sqlEmitido.length >= 25);
 
 // ─── Reglas que se pueden verificar en frío ─────────────────────────────────
 console.log('\n== Seguridad ==');
@@ -68,6 +104,33 @@ check('Ningún valor del usuario acaba dentro del texto del SQL',
 
 check('Todas las consultas usan parámetros con @',
   sqlEmitido.every((s) => !/\b(SELECT|INSERT|UPDATE)\b/i.test(s) || /@\w+/.test(s) || /SYSUTCDATETIME/.test(s)));
+
+console.log('\n== Contraseñas ==');
+
+// Ni la contraseña ni su hash pueden acabar dentro del texto de una consulta:
+// ahí quedarían en cualquier log de SQL Server que alguien active.
+const secretos = [PASSWORD_ACTUAL, 'MiClaveNueva2026', HASH_ACTUAL, '$2a$', '$2b$'];
+const conSecretos = sqlEmitido.filter((s) => secretos.some((v) => s.includes(v)));
+check('Ninguna contraseña ni hash aparece en el texto del SQL',
+  conSecretos.length === 0,
+  conSecretos.length ? `(${conSecretos[0].slice(0, 90)}...)` : '');
+
+// El listado de administración no debe traer el hash: si no se selecciona,
+// no se puede filtrar por accidente en una respuesta JSON.
+const lecturasDeUsuarios = sqlEmitido.filter((s) =>
+  /^\s*SELECT/i.test(s) && /dbo\.usuarios\s+u\b/i.test(s));
+check('El listado de usuarios no selecciona password_hash',
+  lecturasDeUsuarios.length > 0 && !lecturasDeUsuarios.some((s) => /u\.password_hash/i.test(s)),
+  `(${lecturasDeUsuarios.length} lecturas)`);
+
+// Al cambiar o restablecer, siempre se escribe la bandera y la fecha junto
+// con el hash. Si se olvidara, el usuario quedaría obligado a cambiar la
+// contraseña para siempre —o nunca.
+const cambiosDePassword = sqlEmitido.filter((s) => /UPDATE\s+dbo\.usuarios/i.test(s) && /password_hash\s*=/i.test(s));
+check('Todo cambio de contraseña actualiza la bandera y la fecha',
+  cambiosDePassword.length >= 2
+  && cambiosDePassword.every((s) => /debe_cambiar_password\s*=/i.test(s) && /password_actualizado_en\s*=/i.test(s)),
+  `(${cambiosDePassword.length} cambios)`);
 
 console.log('\n== Dialecto: debe ser SQL Server, no PostgreSQL ==');
 

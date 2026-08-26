@@ -30,6 +30,21 @@ export const ESTILO_PRIORIDAD = {
   Baja:    { clases: 'bg-surface-alt text-ink-2 ring-hairline',    punto: 'bg-muted'    },
 };
 
+export const ROLES = ['Vendedor', 'Comprador', 'Gerente'];
+
+/** Qué hace cada rol, en una línea. Se muestra al dar de alta una cuenta. */
+export const DESCRIPCION_ROL = {
+  Vendedor:  'Levanta solicitudes y da seguimiento a las suyas.',
+  Comprador: 'Trabaja la mesa de compras: cotiza, autoriza y mueve estatus.',
+  Gerente:   'Ve todo, mueve estatus y administra las cuentas de usuario.',
+};
+
+export const ESTILO_ROL = {
+  Vendedor:  { clases: 'bg-brand/10    text-ink   ring-brand/35',    punto: 'bg-brand'    },
+  Comprador: { clases: 'bg-serious/15  text-ink   ring-serious/50',  punto: 'bg-serious'  },
+  Gerente:   { clases: 'bg-good/12     text-ink   ring-good/45',     punto: 'bg-good'     },
+};
+
 /** Estados que ya cerraron la solicitud. */
 export const ESTATUS_FINALES = ['Recibido', 'Cancelada', 'Rechazada'];
 

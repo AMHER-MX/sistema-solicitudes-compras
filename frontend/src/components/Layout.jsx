@@ -2,8 +2,9 @@
  * Marco de la aplicación: barra superior con navegación por rol,
  * identidad del usuario y botón de salida.
  */
-import { BarChart3, ClipboardList, LogOut, Package, Search } from 'lucide-react';
+import { BarChart3, ClipboardList, KeyRound, LogOut, Search, Users } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
+import { LogoCatosa } from './LogoCatosa.jsx';
 
 /** Pestañas visibles según el rol del usuario. */
 export function pestanasPorRol(rol) {
@@ -11,11 +12,12 @@ export function pestanasPorRol(rol) {
     { id: 'vendedor',  etiqueta: 'Mis solicitudes', icono: Search,        roles: ['Vendedor', 'Gerente'] },
     { id: 'compras',   etiqueta: 'Mesa de compras', icono: ClipboardList, roles: ['Comprador', 'Gerente'] },
     { id: 'dashboard', etiqueta: 'Dashboard',       icono: BarChart3,     roles: ['Gerente', 'Comprador'] },
+    { id: 'usuarios',  etiqueta: 'Usuarios',        icono: Users,         roles: ['Gerente'] },
   ];
   return todas.filter((t) => t.roles.includes(rol));
 }
 
-export default function Layout({ vista, setVista, children }) {
+export default function Layout({ vista, setVista, onCambiarPassword, children }) {
   const { usuario, salir } = useAuth();
   const pestanas = pestanasPorRol(usuario.rol);
 
@@ -23,14 +25,13 @@ export default function Layout({ vista, setVista, children }) {
     <div className="min-h-screen bg-plane">
       <header className="sticky top-0 z-40 border-b border-hairline bg-surface/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center gap-4 px-4 py-3">
-          {/* Marca */}
-          <div className="flex items-center gap-2.5">
-            <span className="grid size-8 place-items-center rounded-lg bg-brand text-white">
-              <Package size={17} />
-            </span>
-            <div className="leading-tight">
+          {/* Marca: el logo de la empresa y, separado, el nombre del sistema */}
+          <div className="flex shrink-0 items-center gap-3">
+            <LogoCatosa className="w-24 text-ink sm:w-28" conBajada={false} />
+            <span className="hidden h-8 w-px bg-hairline sm:block" aria-hidden />
+            <div className="hidden leading-tight sm:block">
               <p className="text-sm font-semibold tracking-tight text-ink">SGC Compras</p>
-              <p className="hidden text-[11px] text-muted sm:block">
+              <p className="text-[11px] text-muted">
                 {usuario.sucursal_nombre || 'Sin sucursal'}
               </p>
             </div>
@@ -64,6 +65,13 @@ export default function Layout({ vista, setVista, children }) {
               <p className="text-xs font-medium text-ink">{usuario.nombre}</p>
               <p className="text-[11px] text-muted">{usuario.rol}</p>
             </div>
+            <button
+              onClick={onCambiarPassword}
+              title="Cambiar mi contraseña"
+              className="rounded-lg p-2 text-muted hover:bg-surface-alt hover:text-ink"
+            >
+              <KeyRound size={16} />
+            </button>
             <button
               onClick={salir}
               title="Cerrar sesión"

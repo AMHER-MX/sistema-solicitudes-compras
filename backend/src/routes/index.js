@@ -7,6 +7,7 @@ import catalogosRoutes from './catalogos.routes.js';
 import dashboardRoutes from './dashboard.routes.js';
 import productosRoutes from './productos.routes.js';
 import solicitudesRoutes from './solicitudes.routes.js';
+import usuariosRoutes from './usuarios.routes.js';
 import { probarConexion } from '../config/db.js';
 import { estadoErp } from '../services/erp/index.js';
 import { ESTATUS, PRIORIDADES, TRANSICIONES } from '../utils/estatus.js';
@@ -35,5 +36,6 @@ router.use('/catalogos', catalogosRoutes);
 router.use('/productos', productosRoutes);
 router.use('/solicitudes', solicitudesRoutes);
 router.use('/dashboard', dashboardRoutes);
+router.use('/usuarios', usuariosRoutes);
 
 export default router;

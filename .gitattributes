@@ -1,0 +1,26 @@
+# Finales de línea
+#
+# Windows termina las líneas con dos caracteres (CRLF) y Linux con uno (LF).
+# Sin estas reglas, Git avisa en cada `git add` y, peor, un archivo editado en
+# Windows aparece como "modificado por completo" para quien trabaje en Linux
+# —o en el servidor— aunque no se haya cambiado ni una letra.
+#
+# Regla general: dentro del repositorio, siempre LF.
+* text=auto eol=lf
+
+# Excepción: los scripts de Windows se llevan mejor con CRLF en disco.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binarios: Git no debe tocarlos nunca.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.xlsx binary
+*.zip  binary
+*.tgz  binary
+*.gz   binary

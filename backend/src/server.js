@@ -8,6 +8,35 @@ import { env } from './config/env.js';
 import { cerrarPool, probarConexion } from './config/db.js';
 import { estadoErp } from './services/erp/index.js';
 import { cerrarPoolSqlServer } from './services/erp/sqlServerClient.js';
+import { cuentasDemoActivas } from './services/usuarios.service.js';
+
+/**
+ * Avisa si las cuentas de demostración siguen activas.
+ *
+ * Son cuatro cuentas con la misma contraseña conocida (demo1234) que carga el
+ * seed. Sirven para probar, pero en el servidor de producción son una puerta
+ * abierta: cualquiera que haya visto el README puede entrar como Gerente.
+ * En producción el aviso es grande y con instrucciones.
+ */
+async function avisarCuentasDemo() {
+  let demo = [];
+  try {
+    demo = await cuentasDemoActivas();
+  } catch {
+    return; // si la tabla aún no existe, no es momento de avisar nada
+  }
+  if (demo.length === 0) return;
+
+  if (env.nodeEnv === 'production') {
+    console.warn('──────────────────────────────────────────────');
+    console.warn(` ⚠  ATENCIÓN: hay ${demo.length} cuenta(s) de PRUEBA activas en producción.`);
+    for (const u of demo) console.warn(`      ${u.email}  (${u.rol})`);
+    console.warn('    Todas usan la misma contraseña, que está en el README.');
+    console.warn('    Desactívalas desde la pantalla Usuarios antes de dar acceso a nadie.');
+  } else {
+    console.log(` Cuentas demo: ${demo.length} activas (${demo.map((u) => u.email).join(', ')})`);
+  }
+}
 
 const app = crearApp();
 
@@ -36,6 +65,7 @@ const servidor = app.listen(env.port, async () => {
   try {
     const hora = await probarConexion();
     console.log(` SQL Server : conectado (${hora.toISOString()})`);
+    await avisarCuentasDemo();
   } catch (e) {
     console.error(` SQL Server : SIN CONEXIÓN -> ${e.message}`);
     console.error('   Revisa las variables DB_* en tu archivo .env');

@@ -26,3 +26,13 @@ Thumbs.db
 # Respaldos de base de datos
 *.dump
 *.sql.gz
+
+# Carpeta de trabajo temporal: nada de aquí debe llegar al repositorio.
+_to_delete/
+
+# Paquetes comprimidos sueltos
+*.tgz
+
+# La raíz del proyecto no tiene package.json; un lock aquí es basura
+# de un `npm install` corrido en la carpeta equivocada.
+/package-lock.json

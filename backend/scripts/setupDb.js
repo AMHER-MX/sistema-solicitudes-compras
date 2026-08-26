@@ -1,62 +1,33 @@
 /**
- * Crea el esquema y carga los datos de prueba en SQL Server.
+ * Instala el esquema DESDE CERO y carga los datos de prueba en SQL Server.
  *
  *   cd backend && npm run db:setup
+ *
+ * ⚠  OJO: 01_schema.sql empieza tirando las tablas (DROP TABLE). Esto BORRA
+ *    todas las solicitudes capturadas. Es para instalar una base nueva.
+ *    Si la base ya está en uso y solo quieres agregar lo nuevo, usa:
+ *        npm run db:migrar
  *
  * Requiere que la base indicada en DB_DATABASE ya exista. Para crearla:
  *   sqlcmd -S localhost -U sa -P tuPassword -Q "CREATE DATABASE SGC_COMPRAS"
  * o desde SQL Server Management Studio: clic derecho en Databases -> New Database.
  */
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { cerrarPool, obtenerPool } from '../src/config/db.js';
 import { env } from '../src/config/env.js';
-
-const aqui = path.dirname(fileURLToPath(import.meta.url));
-const dirSql = path.resolve(aqui, '..', '..', 'database');
-
-const ARCHIVOS = ['01_schema.sql', '02_seed.sql'];
-
-/**
- * Parte un script en lotes por la palabra GO.
- *
- * GO no es SQL: es el separador de lotes que entienden sqlcmd y SSMS, pero el
- * driver no lo reconoce. Hay que mandar cada lote por separado — y además es
- * obligatorio, porque instrucciones como CREATE VIEW deben ir solas en su lote.
- */
-function partirEnLotes(sql) {
-  return sql
-    .split(/^\s*GO\s*$/gim)
-    .map((lote) => lote.trim())
-    .filter((lote) => lote.length > 0);
-}
+import { aplicarArchivo, listarMigraciones } from './lib/sqlLotes.js';
 
 async function main() {
   console.log(`Aplicando scripts SQL sobre ${env.db.database} en ${env.db.host}:${env.db.port}\n`);
 
   const pool = await obtenerPool();
 
-  for (const archivo of ARCHIVOS) {
-    const ruta = path.join(dirSql, archivo);
-    const contenido = await fs.readFile(ruta, 'utf8');
-    const lotes = partirEnLotes(contenido);
+  // Las migraciones también se aplican aquí. En una base recién creada no
+  // hacen nada (01_schema.sql ya trae todo), pero así una instalación nueva
+  // y una migrada quedan idénticas, sin depender de que nadie se acuerde.
+  const archivos = ['01_schema.sql', '02_seed.sql', ...(await listarMigraciones())];
 
-    process.stdout.write(`  → ${archivo} (${lotes.length} lotes) ... `);
-
-    for (const [i, lote] of lotes.entries()) {
-      try {
-        await pool.request().batch(lote);
-      } catch (error) {
-        console.log('FALLÓ');
-        console.error(`\nError en el lote ${i + 1} de ${archivo}:`);
-        console.error(`  ${error.message}\n`);
-        console.error('SQL del lote:');
-        console.error(lote.split('\n').slice(0, 25).join('\n'));
-        throw error;
-      }
-    }
-    console.log('OK');
+  for (const archivo of archivos) {
+    await aplicarArchivo(pool, archivo);
   }
 
   const [conteos] = (await pool.request().query(`
@@ -73,6 +44,8 @@ async function main() {
   console.log('  vendedor@demo.mx   -> Vendedor');
   console.log('  comprador@demo.mx  -> Comprador');
   console.log('  gerente@demo.mx    -> Gerente');
+  console.log('\n⚠  Estas cuentas son de prueba. Antes de producción, crea las');
+  console.log('   cuentas reales desde la pantalla Usuarios y desactiva estas.');
 
   await cerrarPool();
 }

@@ -38,12 +38,26 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+/**
+ * Evento que se dispara cuando el servidor responde que la contraseña sigue
+ * siendo la temporal. Lo escucha AuthContext para mandar a la pantalla de
+ * cambio sin que cada llamada tenga que acordarse de revisarlo.
+ */
+export const EVENTO_PASSWORD_TEMPORAL = 'sgc:password-temporal';
+
 api.interceptors.response.use(
   (respuesta) => respuesta,
   (error) => {
     if (error.response?.status === 401 && sesion.obtenerToken()) {
       sesion.limpiar();
       window.location.reload(); // regresa al login
+    }
+
+    // 403 + codigo PASSWORD_TEMPORAL: la cuenta entró pero está obligada a
+    // cambiar la contraseña. No se cierra la sesión —se necesita para poder
+    // cambiarla—, solo se avisa a la aplicación.
+    if (error.response?.status === 403 && error.response?.data?.codigo === 'PASSWORD_TEMPORAL') {
+      window.dispatchEvent(new CustomEvent(EVENTO_PASSWORD_TEMPORAL));
     }
     // Mensaje legible para el usuario final.
     error.mensaje =
@@ -60,6 +74,16 @@ api.interceptors.response.use(
 export const authApi = {
   login: (email, password) => api.post('/auth/login', { email, password }).then((r) => r.data),
   yo:    () => api.get('/auth/yo').then((r) => r.data),
+  cambiarPassword: (passwordActual, passwordNueva) =>
+    api.post('/auth/cambiar-password', { passwordActual, passwordNueva }).then((r) => r.data),
+};
+
+/** Administración de cuentas. Solo responde si quien pregunta es Gerente. */
+export const usuariosApi = {
+  listar:  (filtros = {}) => api.get('/usuarios', { params: filtros }).then((r) => r.data),
+  crear:   (payload) => api.post('/usuarios', payload).then((r) => r.data),
+  actualizar: (id, payload) => api.patch(`/usuarios/${id}`, payload).then((r) => r.data),
+  restablecerPassword: (id) => api.post(`/usuarios/${id}/password`).then((r) => r.data),
 };
 
 export const productosApi = {

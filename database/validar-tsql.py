@@ -10,6 +10,7 @@ Es una red de seguridad para cuando alguien edite el esquema: detecta errores
 de sintaxis antes de que lleguen a la base. NO valida que las tablas o columnas
 existan — eso solo lo dice el servidor real.
 """
+import logging
 import re
 import sys
 from pathlib import Path
@@ -19,6 +20,12 @@ try:
     from sqlglot import expressions as exp
 except ImportError:
     sys.exit("Falta sqlglot. Instálalo con:  pip install sqlglot")
+
+# sqlglot avisa cada vez que encuentra sintaxis que no modela (PRINT, THROW,
+# IF ... BEGIN ... END). No son errores: el lote sí es T-SQL válido, solo que
+# la librería no lo desarma. Lo que sí importa —un lote que quede como Command
+# en la raíz— se sigue detectando abajo, así que apagamos el ruido.
+logging.getLogger("sqlglot").setLevel(logging.ERROR)
 
 RAIZ = Path(__file__).resolve().parent
 
@@ -54,7 +61,12 @@ def revisar(ruta: Path) -> int:
 
 
 def main():
-    total = sum(revisar(RAIZ / archivo) for archivo in ("01_schema.sql", "02_seed.sql"))
+    # Todos los .sql de la carpeta, en orden. Así una migración nueva queda
+    # cubierta sin que nadie tenga que acordarse de agregarla aquí.
+    archivos = sorted(RAIZ.glob("*.sql"))
+    if not archivos:
+        sys.exit("No se encontró ningún .sql en database/")
+    total = sum(revisar(ruta) for ruta in archivos)
     print("\nT-SQL válido ✓" if total == 0 else f"\n{total} problema(s) por revisar ✗")
     sys.exit(0 if total == 0 else 1)
 

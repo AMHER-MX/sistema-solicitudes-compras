@@ -40,8 +40,26 @@ const configuracion = {
 // un servidor delante (lo usa scripts/validarSql.js).
 const ensayo = process.env.SGC_DRY_RUN === '1';
 export const sqlEmitido = [];
+
+/**
+ * Gancho opcional para el modo ensayo: recibe el texto del SQL y devuelve los
+ * renglones que debe fingir la consulta, o `undefined` para dejar el renglón
+ * genérico de abajo.
+ *
+ * Hace falta porque algunas rutas deciden qué hacer según lo que devuelve una
+ * consulta anterior — por ejemplo, "¿ya existe una cuenta con este correo?".
+ * Con una respuesta fija, el alta de usuario nunca llegaría al INSERT y ese
+ * SQL se quedaría sin revisar.
+ */
+let ganchoEnsayo = null;
+export const definirRespuestaEnsayo = (fn) => { ganchoEnsayo = fn; };
+
 const registrar = (sqlText) => {
   sqlEmitido.push(sqlText);
+  if (ganchoEnsayo) {
+    const respuesta = ganchoEnsayo(sqlText);
+    if (respuesta !== undefined) return respuesta;
+  }
   // Renglón ficticio: suficiente para que el código que encadena consultas
   // (por ejemplo, usar el id recién insertado) siga su curso.
   return [{ id: 1, estatus_actual: 'Pendiente', clave: '101', ahora: new Date() }];

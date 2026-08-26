@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as ctrl from '../controllers/dashboard.controller.js';
 import { autenticar, permitirRoles } from '../middleware/auth.js';
+import { cuentaVigente } from '../middleware/cuenta.js';
 import { ROLES } from '../utils/estatus.js';
 import { asyncHandler } from '../utils/errors.js';
 
@@ -10,6 +11,7 @@ const router = Router();
 router.get(
   '/gerencia',
   autenticar,
+  cuentaVigente,
   permitirRoles(ROLES.GERENTE, ROLES.COMPRADOR),
   asyncHandler(ctrl.gerencia),
 );

@@ -77,16 +77,29 @@ CREATE TABLE dbo.usuarios (
     activo         BIT            NOT NULL CONSTRAINT DF_usuarios_activo DEFAULT (1),
     ultimo_acceso  DATETIME2(3)   NULL,
     creado_en      DATETIME2(3)   NOT NULL CONSTRAINT DF_usuarios_creado DEFAULT (SYSUTCDATETIME()),
+
+    -- Administración de cuentas (ver database/03_migracion_usuarios.sql).
+    -- En 1, el usuario entra pero solo puede cambiar su contraseña temporal.
+    debe_cambiar_password    BIT          NOT NULL
+        CONSTRAINT DF_usuarios_debe_cambiar DEFAULT (0),
+    -- Quién dio de alta la cuenta. NULL para las cuentas que carga el seed.
+    creado_por               INT          NULL,
+    -- NULL = nunca ha cambiado la contraseña desde que se creó la cuenta.
+    password_actualizado_en  DATETIME2(3) NULL,
+
     CONSTRAINT PK_usuarios PRIMARY KEY (id),
     CONSTRAINT UQ_usuarios_email UNIQUE (email),
     CONSTRAINT CK_usuarios_rol CHECK (rol IN ('Vendedor', 'Comprador', 'Gerente')),
     CONSTRAINT FK_usuarios_sucursal FOREIGN KEY (sucursal_id)
-        REFERENCES dbo.sucursales (id)
+        REFERENCES dbo.sucursales (id),
+    CONSTRAINT FK_usuarios_creado_por FOREIGN KEY (creado_por)
+        REFERENCES dbo.usuarios (id)
 );
 GO
 
-CREATE INDEX idx_usuarios_rol      ON dbo.usuarios (rol);
-CREATE INDEX idx_usuarios_sucursal ON dbo.usuarios (sucursal_id);
+CREATE INDEX idx_usuarios_rol        ON dbo.usuarios (rol);
+CREATE INDEX idx_usuarios_sucursal   ON dbo.usuarios (sucursal_id);
+CREATE INDEX idx_usuarios_rol_nombre ON dbo.usuarios (rol, nombre);
 GO
 
 -- =============================================================================
