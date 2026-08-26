@@ -17,10 +17,53 @@
 import { cerrarPool, obtenerPool, query } from '../src/config/db.js';
 import { aplicarArchivo, listarMigraciones } from './lib/sqlLotes.js';
 
+/**
+ * Describe un error de conexión de forma que se pueda actuar sobre él.
+ *
+ * Cuando Node intenta conectarse a un nombre que resuelve a varias direcciones
+ * y todas fallan, junta los fallos en un AggregateError cuyo `.message` está
+ * VACÍO. Imprimir solo el mensaje deja al operador con "no se pudo preparar la
+ * base:" y nada más — que fue exactamente lo que pasó la primera vez.
+ */
+function describirError(error) {
+  if (Array.isArray(error?.errors) && error.errors.length) {
+    return error.errors.map((e) => e.code || e.message || e.name).join(' · ');
+  }
+  if (error?.code) return `${error.code}${error.message ? `: ${error.message}` : ''}`;
+  return error?.message || error?.name || 'error sin descripción';
+}
+
+/**
+ * Espera a que la base conteste.
+ *
+ * La red privada del hospedaje tarda un momento en levantar después de que
+ * arranca el contenedor. Si la aplicación se conecta en el primer instante, el
+ * nombre del servidor todavía no resuelve y el despliegue muere — aunque la
+ * base esté perfectamente bien y un segundo después responda.
+ */
+async function esperarALaBase({ intentos = 15, esperaMs = 2000 } = {}) {
+  for (let i = 1; i <= intentos; i += 1) {
+    try {
+      await query('SELECT 1');
+      if (i > 1) console.log(`[nube] La base respondió en el intento ${i}.`);
+      return;
+    } catch (error) {
+      const detalle = describirError(error);
+      if (i === intentos) {
+        throw new Error(`la base no respondió tras ${intentos} intentos (${detalle})`);
+      }
+      console.log(`[nube] La base aún no responde (${detalle}). `
+                + `Reintento ${i}/${intentos - 1} en ${esperaMs / 1000}s...`);
+      await new Promise((seguir) => { setTimeout(seguir, esperaMs); });
+    }
+  }
+}
+
 async function main() {
   console.log('[nube] Revisando la base antes de arrancar...');
 
   const pool = await obtenerPool();
+  await esperarALaBase();
 
   const [tabla] = await query("SELECT to_regclass('public.usuarios') AS existe");
   const hayEsquema = tabla.existe !== null;
@@ -60,8 +103,9 @@ main()
   .then(() => cerrarPool())
   .then(() => process.exit(0))
   .catch(async (error) => {
-    console.error('\n[nube] No se pudo preparar la base:', error.message);
-    console.error('[nube] Revisa que la variable DATABASE_URL apunte al PostgreSQL del proyecto.');
+    console.error('\n[nube] No se pudo preparar la base:', describirError(error));
+    console.error('[nube] Revisa que DATABASE_URL apunte al PostgreSQL del proyecto');
+    console.error('[nube] y que el servicio de base de datos esté en línea.');
     await cerrarPool().catch(() => {});
     // Salir con error evita que el servidor arranque contra una base rota:
     // más vale que el despliegue falle a que la gente entre y no funcione.

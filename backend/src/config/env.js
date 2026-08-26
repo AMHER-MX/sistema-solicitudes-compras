@@ -31,8 +31,18 @@ export const env = {
     database: process.env.DB_DATABASE || 'sgc_compras',
     user: process.env.DB_USER || 'postgres',
     password: process.env.DB_PASSWORD || '',
-    // En un hospedaje la conexión va cifrada; en local, no.
-    ssl: bool(process.env.DB_SSL, Boolean(process.env.DATABASE_URL)),
+    // Cifrado de la conexión.
+    //
+    // No basta con "si hay DATABASE_URL, entonces TLS": la red privada de
+    // Railway (los hosts *.railway.internal) NO habla TLS, y pedírselo hace
+    // que la conexión falle. Los hosts públicos sí lo exigen. Se decide
+    // mirando a dónde apunta la cadena, y DB_SSL manda si está definida.
+    ssl: (() => {
+      if (process.env.DB_SSL !== undefined) return bool(process.env.DB_SSL, false);
+      const url = process.env.DATABASE_URL || '';
+      if (!url) return false;
+      return !/\.railway\.internal/i.test(url);
+    })(),
   },
 
   jwt: {
