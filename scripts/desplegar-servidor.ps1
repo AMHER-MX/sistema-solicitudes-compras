@@ -354,12 +354,45 @@ if (-not (Test-Path $rutaEnv)) {
         $dbUser = Pedir-Texto 'Usuario de SQL'         'sgc_app'
         $dbPass = Pedir-Secreto 'Contraseña de ese usuario'
 
+        <#
+            De dónde salen las existencias.
+
+            Hay dos caminos y el sistema prefiere el primero que esté
+            configurado. No es lo mismo elegir mal que dejarlo vacío: sin
+            ninguno de los dos, la aplicación arranca igual pero muestra un
+            catálogo SIMULADO. Existencias inventadas en una pantalla que se
+            ve idéntica a la de verdad es el peor final posible, así que aquí
+            se pregunta en lugar de suponer.
+        #>
         Write-Host ''
-        Write-Host '          --- Quiter (solo lectura de existencias) ---' -ForegroundColor DarkGray
-        $erpHost = Pedir-Texto 'Servidor de Quiter'  $dbHost
-        $erpBase = Pedir-Texto 'Base de datos de Quiter' ''
-        $erpUser = Pedir-Texto 'Usuario de solo lectura' 'sgc_lectura'
-        $erpPass = Pedir-Secreto 'Contraseña de ese usuario'
+        Write-Host '          --- ¿De dónde lee las existencias de Quiter? ---' -ForegroundColor DarkGray
+        Write-Host '            1) Por la API interna de refacciones (lo que ya funciona hoy)' -ForegroundColor Gray
+        Write-Host '            2) Directo al SQL Server de Quiter (necesita un usuario de solo lectura)' -ForegroundColor Gray
+        $caminoErp = Pedir-Texto 'Elige 1 o 2' '1'
+
+        if ($caminoErp -eq '2') {
+            $erpHost = Pedir-Texto 'Servidor de Quiter'  $dbHost
+            $erpBase = Pedir-Texto 'Base de datos de Quiter' ''
+            $erpUser = Pedir-Texto 'Usuario de solo lectura' 'sgc_compras_ro'
+            $erpPass = Pedir-Secreto 'Contraseña de ese usuario'
+
+            Establecer-ValorEnv $rutaEnv 'ERPSQL_HOST'     $erpHost
+            Establecer-ValorEnv $rutaEnv 'ERPSQL_PORT'     '1433'
+            Establecer-ValorEnv $rutaEnv 'ERPSQL_DATABASE' $erpBase
+            Establecer-ValorEnv $rutaEnv 'ERPSQL_USER'     $erpUser
+            Establecer-ValorEnv $rutaEnv 'ERPSQL_PASSWORD' $erpPass
+            Remove-Variable erpPass -ErrorAction SilentlyContinue
+            Escribir-Ok 'Existencias: directo al SQL Server de Quiter.'
+        } else {
+            $apiUrl = Pedir-Texto 'URL de la API de refacciones' 'https://api.catosaapps.lat'
+            Establecer-ValorEnv $rutaEnv 'QUITER_BASE_URL'  $apiUrl
+            Establecer-ValorEnv $rutaEnv 'QUITER_TIMEOUT_MS' '5000'
+            # Vacías a propósito: si tuvieran valor, el sistema preferiría el
+            # camino de SQL sobre el que se acaba de elegir.
+            Establecer-ValorEnv $rutaEnv 'ERPSQL_HOST'     ''
+            Establecer-ValorEnv $rutaEnv 'ERPSQL_DATABASE' ''
+            Escribir-Ok "Existencias: por la API ($apiUrl)."
+        }
 
         Establecer-ValorEnv $rutaEnv 'NODE_ENV'    'production'
         Establecer-ValorEnv $rutaEnv 'PORT'        "$Puerto"
@@ -373,17 +406,14 @@ if (-not (Test-Path $rutaEnv)) {
         Establecer-ValorEnv $rutaEnv 'DB_ENCRYPT'    'true'
         Establecer-ValorEnv $rutaEnv 'DB_TRUST_CERT' 'true'
 
-        Establecer-ValorEnv $rutaEnv 'ERPSQL_HOST'     $erpHost
-        Establecer-ValorEnv $rutaEnv 'ERPSQL_PORT'     '1433'
-        Establecer-ValorEnv $rutaEnv 'ERPSQL_DATABASE' $erpBase
-        Establecer-ValorEnv $rutaEnv 'ERPSQL_USER'     $erpUser
-        Establecer-ValorEnv $rutaEnv 'ERPSQL_PASSWORD' $erpPass
         Establecer-ValorEnv $rutaEnv 'ERPSQL_ENCRYPT'    'true'
         Establecer-ValorEnv $rutaEnv 'ERPSQL_TRUST_CERT' 'true'
         Establecer-ValorEnv $rutaEnv 'ERPSQL_ALMACENES'  '101,102,103,104,201,202,203'
+        Establecer-ValorEnv $rutaEnv 'ERP_ALMACEN_DEFAULT' '101'
+        Establecer-ValorEnv $rutaEnv 'ERP_CACHE_TTL_SEG'   '30'
 
         # Las variables locales con contraseñas se limpian en cuanto se usaron.
-        Remove-Variable dbPass, erpPass -ErrorAction SilentlyContinue
+        Remove-Variable dbPass -ErrorAction SilentlyContinue
 
         Escribir-Ok 'backend\.env creado.'
     }
@@ -633,7 +663,10 @@ if ($SoloRevisar) {
         $origen = $salud.erp.origen
         Escribir-Dato "Origen de existencias: $origen"
         if ($origen -eq 'MOCK') {
-            Escribir-Aviso 'El ERP está en MOCK: las existencias serían inventadas. Revisa las variables ERPSQL_* en backend\.env.'
+            Escribir-Aviso 'El ERP está en MOCK: las existencias que mostraría son INVENTADAS.'
+            Escribir-Dato 'Configura uno de los dos caminos en backend\.env y vuelve a correr esto:'
+            Escribir-Dato '  · QUITER_BASE_URL  (la API de refacciones), o'
+            Escribir-Dato '  · ERPSQL_HOST, ERPSQL_DATABASE, ERPSQL_USER y ERPSQL_PASSWORD (SQL directo)'
         }
     } finally {
         if ($proceso -and -not $proceso.HasExited) {

@@ -19,15 +19,20 @@ export const env = {
     .map((s) => s.trim())
     .filter(Boolean),
 
-  // Base de datos propia del sistema (SQL Server, base SGC_COMPRAS).
+  // Base de datos propia del sistema (PostgreSQL).
+  //
+  // Railway —y casi cualquier hospedaje— entrega una sola cadena de conexión
+  // en DATABASE_URL. Si está, manda sobre los valores sueltos: así el mismo
+  // código corre en internet y en una computadora local sin cambiar nada.
   db: {
+    url: (process.env.DATABASE_URL || '').trim(),
     host: process.env.DB_HOST || 'localhost',
-    port: num(process.env.DB_PORT, 1433),
-    database: process.env.DB_DATABASE || 'SGC_COMPRAS',
-    user: process.env.DB_USER || 'sa',
+    port: num(process.env.DB_PORT, 5432),
+    database: process.env.DB_DATABASE || 'sgc_compras',
+    user: process.env.DB_USER || 'postgres',
     password: process.env.DB_PASSWORD || '',
-    encrypt: bool(process.env.DB_ENCRYPT, true),
-    trustServerCertificate: bool(process.env.DB_TRUST_CERT, true),
+    // En un hospedaje la conexión va cifrada; en local, no.
+    ssl: bool(process.env.DB_SSL, Boolean(process.env.DATABASE_URL)),
   },
 
   jwt: {
@@ -35,7 +40,7 @@ export const env = {
     expiresIn: process.env.JWT_EXPIRES_IN || '8h',
   },
 
-  // ── ERP por API HTTP (opcional) ───────────────────────────────────────────
+  // ── Existencias de Quiter, por la API interna de refacciones ──────────────
   erp: {
     baseUrl: (process.env.QUITER_BASE_URL || '').trim(),
     apiKey: (process.env.QUITER_API_KEY || '').trim(),
@@ -44,22 +49,6 @@ export const env = {
     cacheTtlSeg: num(process.env.ERP_CACHE_TTL_SEG, 30),
   },
 
-  // ── ERP por SQL Server (origen recomendado en producción) ─────────────────
-  erpSql: {
-    host: (process.env.ERPSQL_HOST || '').trim(),
-    port: num(process.env.ERPSQL_PORT, 1433),
-    database: (process.env.ERPSQL_DATABASE || '').trim(),
-    user: (process.env.ERPSQL_USER || '').trim(),
-    password: process.env.ERPSQL_PASSWORD || '',
-    encrypt: bool(process.env.ERPSQL_ENCRYPT, true),
-    trustServerCertificate: bool(process.env.ERPSQL_TRUST_CERT, true),
-    timeoutMs: num(process.env.ERPSQL_TIMEOUT_MS, 15000),
-    // Almacenes de refacciones a considerar, separados por coma.
-    almacenes: (process.env.ERPSQL_ALMACENES || '101,102,103,104,201,202,203')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  },
 };
 
 // Aviso temprano: en producción la llave JWT no puede quedarse por defecto.

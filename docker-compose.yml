@@ -1,27 +1,27 @@
-# Opcional: levanta un SQL Server local sin instalar nada.
-# Útil en Linux y Mac. En Windows suele ser más cómodo instalar
-# SQL Server Express directamente (ver README §2).
+# PostgreSQL local para desarrollo, si no quieres instalarlo en tu máquina.
 #
 #   docker compose up -d
-#   # crear la base una sola vez:
-#   docker exec -it sgc-sqlserver /opt/mssql-tools18/bin/sqlcmd \
-#     -S localhost -U sa -P 'Sgc#Local2026' -C -Q "CREATE DATABASE SGC_COMPRAS"
 #   cd backend && npm run db:setup
 #
-# La contraseña de abajo es solo para desarrollo local.
+# La base queda en localhost:5432 con estos datos, que son los mismos que trae
+# .env.example. No usar en producción: la contraseña está escrita aquí.
 services:
-  db:
-    image: mcr.microsoft.com/mssql/server:2022-latest
-    container_name: sgc-sqlserver
-    restart: unless-stopped
+  postgres:
+    image: postgres:16-alpine
+    container_name: sgc-postgres
     environment:
-      ACCEPT_EULA: "Y"
-      MSSQL_SA_PASSWORD: "Sgc#Local2026"
-      MSSQL_PID: Express
+      POSTGRES_DB: sgc_compras
+      POSTGRES_USER: sgc
+      POSTGRES_PASSWORD: sgc_local
     ports:
-      - "1433:1433"
+      - "5432:5432"
     volumes:
-      - sgc_sqldata:/var/opt/mssql
+      - sgc_datos:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sgc -d sgc_compras"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
-  sgc_sqldata:
+  sgc_datos:

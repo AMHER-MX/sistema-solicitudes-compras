@@ -59,6 +59,16 @@ api.interceptors.response.use(
     if (error.response?.status === 403 && error.response?.data?.codigo === 'PASSWORD_TEMPORAL') {
       window.dispatchEvent(new CustomEvent(EVENTO_PASSWORD_TEMPORAL));
     }
+    // Cuando la respuesta esperada era un archivo, el cuerpo del error llega
+    // como blob y `data.error` no existe: hay que leerlo como texto primero.
+    if (error.response?.data instanceof Blob && error.response.data.type?.includes('json')) {
+      return error.response.data.text().then((texto) => {
+        try { error.mensaje = JSON.parse(texto).error; } catch { /* se queda el genérico */ }
+        error.mensaje = error.mensaje || 'No se pudo generar el archivo.';
+        return Promise.reject(error);
+      });
+    }
+
     // Mensaje legible para el usuario final.
     error.mensaje =
       error.response?.data?.error ||
@@ -97,6 +107,43 @@ export const solicitudesApi = {
   crear:   (payload) => api.post('/solicitudes', payload).then((r) => r.data),
   cambiarEstatus: (id, payload) =>
     api.patch(`/solicitudes/${id}/estatus`, payload).then((r) => r.data),
+};
+
+/**
+ * Descargas a Excel.
+ *
+ * No se puede usar un <a href> normal: la API pide el token en un encabezado y
+ * un enlace no lo manda. Así que el archivo se pide con axios, se recibe como
+ * blob y se dispara la descarga desde memoria.
+ */
+export const reportesApi = {
+  descargar: async (tipo, filtros = {}) => {
+    const respuesta = await api.get(`/reportes/${tipo}`, {
+      params: filtros,
+      responseType: 'blob',
+      // Un Excel grande tarda más que una consulta normal.
+      timeout: 120000,
+    });
+
+    // El nombre lo decide el servidor; si no llegara, uno razonable de reserva.
+    const cabecera = respuesta.headers['content-disposition'] || '';
+    const coincidencia = /filename="?([^";]+)"?/i.exec(cabecera);
+    const nombre = coincidencia
+      ? coincidencia[1]
+      : `${tipo}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+    const url = URL.createObjectURL(respuesta.data);
+    const enlace = document.createElement('a');
+    enlace.href = url;
+    enlace.download = nombre;
+    document.body.appendChild(enlace);
+    enlace.click();
+    enlace.remove();
+    // Sin esto, el navegador se queda con el archivo en memoria.
+    URL.revokeObjectURL(url);
+
+    return nombre;
+  },
 };
 
 export const dashboardApi = {

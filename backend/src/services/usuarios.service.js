@@ -1,5 +1,5 @@
 /**
- * Administración de cuentas de usuario (SQL Server).
+ * Administración de cuentas de usuario (PostgreSQL).
  *
  * Solo el Gerente llega aquí, salvo `cambiarPasswordPropia`, que es para
  * cualquiera que ya inició sesión.
@@ -14,7 +14,7 @@
  *     el acceso por accidente.
  */
 import bcrypt from 'bcryptjs';
-import { T, query, queryUno } from '../config/db.js';
+import { query, queryUno } from '../config/db.js';
 import { badRequest, conflict, notFound } from '../utils/errors.js';
 import { ROLES } from '../utils/estatus.js';
 import { generarPasswordTemporal, revisarPassword } from '../utils/password.js';
@@ -46,9 +46,9 @@ const SELECT_USUARIO = `
     quien.nombre AS creado_por_nombre`;
 
 const FROM_USUARIO = `
-  FROM      dbo.usuarios u
-  LEFT JOIN dbo.sucursales su   ON su.id    = u.sucursal_id
-  LEFT JOIN dbo.usuarios   quien ON quien.id = u.creado_por`;
+  FROM      usuarios u
+  LEFT JOIN sucursales su   ON su.id    = u.sucursal_id
+  LEFT JOIN usuarios   quien ON quien.id = u.creado_por`;
 
 /** Normaliza el correo: sin espacios y en minúsculas, siempre. */
 const normalizarEmail = (email) => String(email ?? '').trim().toLowerCase();
@@ -67,15 +67,15 @@ export async function listarUsuarios({ q = '', rol = '', activo } = {}) {
   return query(
     `SELECT ${SELECT_USUARIO}
      ${FROM_USUARIO}
-     WHERE (@q   = '' OR u.nombre LIKE @patron OR u.email LIKE @patron)
+     WHERE (@q   = '' OR u.nombre ILIKE @patron OR u.email ILIKE @patron)
        AND (@rol = '' OR u.rol = @rol)
-       AND (@activo IS NULL OR u.activo = @activo)
+       AND (@activo::boolean IS NULL OR u.activo = @activo::boolean)
      ORDER BY u.activo DESC, u.rol, u.nombre`,
     {
       q: texto,
       patron: `%${texto}%`,
       rol: String(rol).trim(),
-      activo: { tipo: T.Bit, valor: activo === undefined ? null : (activo ? 1 : 0) },
+      activo: activo === undefined ? null : activo,
     },
   );
 }
@@ -97,10 +97,10 @@ export async function obtenerUsuario(id) {
 async function contarGerentesActivos(excluirId = null) {
   const fila = await queryUno(
     `SELECT COUNT(*) AS total
-     FROM   dbo.usuarios
-     WHERE  rol = @rol AND activo = 1
-       AND  (@excluir IS NULL OR id <> @excluir)`,
-    { rol: ROLES.GERENTE, excluir: { tipo: T.Int, valor: excluirId } },
+     FROM   usuarios
+     WHERE  rol = @rol AND activo
+       AND  (@excluir::int IS NULL OR id <> @excluir::int)`,
+    { rol: ROLES.GERENTE, excluir: excluirId },
   );
   return Number(fila?.total ?? 0);
 }
@@ -144,12 +144,12 @@ export async function crearUsuario(datos, creadoPor) {
   if (problemas.length) throw badRequest('Revisa los datos de la cuenta', problemas);
 
   if (sucursalId !== null) {
-    const sucursal = await queryUno('SELECT id FROM dbo.sucursales WHERE id = @id', { id: sucursalId });
+    const sucursal = await queryUno('SELECT id FROM sucursales WHERE id = @id', { id: sucursalId });
     if (!sucursal) throw badRequest('La sucursal indicada no existe');
   }
 
   const yaExiste = await queryUno(
-    'SELECT id, activo FROM dbo.usuarios WHERE email = @email',
+    'SELECT id, activo FROM usuarios WHERE email = @email',
     { email },
   );
   if (yaExiste) {
@@ -162,17 +162,17 @@ export async function crearUsuario(datos, creadoPor) {
   const hash = await bcrypt.hash(passwordTemporal, RONDAS_BCRYPT);
 
   const [fila] = await query(
-    `INSERT INTO dbo.usuarios
+    `INSERT INTO usuarios
         (nombre, email, password_hash, rol, sucursal_id, activo, debe_cambiar_password, creado_por)
-     OUTPUT INSERTED.id
-     VALUES (@nombre, @email, @hash, @rol, @sucursal, 1, 1, @creadoPor)`,
+     VALUES (@nombre, @email, @hash, @rol, @sucursal::int, TRUE, TRUE, @creadoPor::int)
+     RETURNING id`,
     {
       nombre,
       email,
       hash,
       rol,
-      sucursal: { tipo: T.Int, valor: sucursalId },
-      creadoPor: { tipo: T.Int, valor: creadoPor ?? null },
+      sucursal: sucursalId,
+      creadoPor: creadoPor ?? null,
     },
   );
 
@@ -236,15 +236,15 @@ export async function actualizarUsuario(id, cambios, actorId) {
       problemas.push('La sucursal no es válida.');
     } else {
       if (sucursalId !== null) {
-        const sucursal = await queryUno('SELECT id FROM dbo.sucursales WHERE id = @id', { id: sucursalId });
+        const sucursal = await queryUno('SELECT id FROM sucursales WHERE id = @id', { id: sucursalId });
         if (!sucursal) problemas.push('La sucursal indicada no existe.');
       }
       const rolFinal = params.rol ?? objetivo.rol;
       if (rolFinal === ROLES.VENDEDOR && sucursalId === null) {
         problemas.push('Un Vendedor necesita una sucursal asignada.');
       }
-      asignaciones.push('sucursal_id = @sucursal');
-      params.sucursal = { tipo: T.Int, valor: sucursalId };
+      asignaciones.push('sucursal_id = @sucursal::int');
+      params.sucursal = sucursalId;
     }
   }
 
@@ -257,7 +257,7 @@ export async function actualizarUsuario(id, cambios, actorId) {
       problemas.push('Es el único Gerente activo: no se puede desactivar.');
     } else {
       asignaciones.push('activo = @activo');
-      params.activo = { tipo: T.Bit, valor: activo ? 1 : 0 };
+      params.activo = activo;
     }
   }
 
@@ -265,7 +265,7 @@ export async function actualizarUsuario(id, cambios, actorId) {
   if (asignaciones.length === 0) return objetivo; // nada que hacer
 
   await query(
-    `UPDATE dbo.usuarios SET ${asignaciones.join(', ')} WHERE id = @id`,
+    `UPDATE usuarios SET ${asignaciones.join(', ')} WHERE id = @id`,
     params,
   );
 
@@ -293,10 +293,10 @@ export async function restablecerPassword(id, actorId) {
   const hash = await bcrypt.hash(passwordTemporal, RONDAS_BCRYPT);
 
   await query(
-    `UPDATE dbo.usuarios
+    `UPDATE usuarios
      SET    password_hash = @hash,
-            debe_cambiar_password = 1,
-            password_actualizado_en = SYSUTCDATETIME()
+            debe_cambiar_password = TRUE,
+            password_actualizado_en = NOW()
      WHERE  id = @id`,
     { hash, id: Number(id) },
   );
@@ -319,7 +319,7 @@ export async function restablecerPassword(id, actorId) {
  */
 export async function cambiarPasswordPropia(id, passwordActual, passwordNueva) {
   const fila = await queryUno(
-    'SELECT id, nombre, email, password_hash FROM dbo.usuarios WHERE id = @id AND activo = 1',
+    'SELECT id, nombre, email, password_hash FROM usuarios WHERE id = @id AND activo = 1',
     { id: Number(id) },
   );
   if (!fila) throw notFound('Usuario no encontrado');
@@ -336,10 +336,10 @@ export async function cambiarPasswordPropia(id, passwordActual, passwordNueva) {
   const hash = await bcrypt.hash(String(passwordNueva), RONDAS_BCRYPT);
 
   await query(
-    `UPDATE dbo.usuarios
+    `UPDATE usuarios
      SET    password_hash = @hash,
-            debe_cambiar_password = 0,
-            password_actualizado_en = SYSUTCDATETIME()
+            debe_cambiar_password = FALSE,
+            password_actualizado_en = NOW()
      WHERE  id = @id`,
     { hash, id: Number(id) },
   );
@@ -358,8 +358,8 @@ export async function cambiarPasswordPropia(id, passwordActual, passwordNueva) {
 export async function cuentasDemoActivas() {
   return query(
     `SELECT id, nombre, email, rol
-     FROM   dbo.usuarios
-     WHERE  activo = 1 AND email LIKE '%@demo.mx'
+     FROM   usuarios
+     WHERE  activo AND email LIKE '%@demo.mx'
      ORDER BY rol, email`,
   );
 }

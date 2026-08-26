@@ -18,8 +18,8 @@ const PERFIL = `
   SELECT u.id, u.nombre, u.email, u.rol, u.sucursal_id, u.ultimo_acceso,
          u.debe_cambiar_password,
          su.nombre AS sucursal_nombre, su.clave AS sucursal_clave
-  FROM      dbo.usuarios u
-  LEFT JOIN dbo.sucursales su ON su.id = u.sucursal_id`;
+  FROM      usuarios u
+  LEFT JOIN sucursales su ON su.id = u.sucursal_id`;
 
 export async function login(req, res) {
   const { email, password } = req.body ?? {};
@@ -34,8 +34,8 @@ export async function login(req, res) {
     `SELECT u.id, u.nombre, u.email, u.password_hash, u.rol, u.sucursal_id, u.activo,
             u.debe_cambiar_password,
             su.nombre AS sucursal_nombre, su.clave AS sucursal_clave
-     FROM      dbo.usuarios u
-     LEFT JOIN dbo.sucursales su ON su.id = u.sucursal_id
+     FROM      usuarios u
+     LEFT JOIN sucursales su ON su.id = u.sucursal_id
      WHERE     LOWER(u.email) = LOWER(@email)`,
     { email },
   );
@@ -56,7 +56,7 @@ export async function login(req, res) {
   limpiarIntentos(email);
 
   await query(
-    'UPDATE dbo.usuarios SET ultimo_acceso = SYSUTCDATETIME() WHERE id = @id',
+    'UPDATE usuarios SET ultimo_acceso = NOW() WHERE id = @id',
     { id: usuario.id },
   );
 

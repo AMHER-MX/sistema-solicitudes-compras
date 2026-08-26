@@ -1,6 +1,6 @@
 /**
  * Manejo centralizado de errores y de rutas inexistentes.
- * Traduce además los errores más comunes de SQL Server a mensajes que el
+ * Traduce además los errores más comunes de PostgreSQL a mensajes que el
  * frontend puede mostrar tal cual, en lugar de un 500 sin explicación.
  */
 import { env } from '../config/env.js';
@@ -13,20 +13,20 @@ export function rutaNoEncontrada(req, res) {
   });
 }
 
-// Número de error de SQL Server -> [status HTTP, mensaje]
-const ERRORES_SQLSERVER = {
-  2627: [409, 'Registro duplicado: ya existe un valor igual en un campo único'],
-  2601: [409, 'Registro duplicado: ya existe un valor igual en un índice único'],
-  547:  [400, 'El dato viola una regla de la base (llave foránea o restricción CHECK)'],
-  515:  [400, 'Falta un campo obligatorio'],
-  8152: [400, 'Un texto es más largo de lo que permite la columna'],
-  2628: [400, 'Un texto es más largo de lo que permite la columna'],
-  245:  [400, 'Formato de dato inválido'],
-  8114: [400, 'Formato de dato inválido'],
+// Código SQLSTATE de PostgreSQL -> [status HTTP, mensaje]
+const ERRORES_POSTGRES = {
+  '23505': [409, 'Registro duplicado: ya existe un valor igual en un campo único'],
+  '23503': [400, 'Referencia inexistente: apunta a un registro que no existe'],
+  '23502': [400, 'Falta un campo obligatorio'],
+  '23514': [400, 'Valor no permitido por las reglas de la base (CHECK)'],
+  '22001': [400, 'Un texto es más largo de lo que permite la columna'],
+  '22P02': [400, 'Formato de dato inválido'],
+  '42703': [500, 'La base no tiene una columna que el sistema espera: falta correr las migraciones'],
+  '42P01': [500, 'La base no tiene una tabla que el sistema espera: falta instalar el esquema'],
 };
 
-// Fallas de red/conexión, que no traen número de SQL Server.
-const ERRORES_CONEXION = ['ECONNREFUSED', 'ETIMEOUT', 'ETIMEDOUT', 'ESOCKET', 'ELOGIN'];
+// Fallas de red/conexión, que no traen SQLSTATE.
+const ERRORES_CONEXION = ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EHOSTUNREACH'];
 
 export function manejadorErrores(err, _req, res, _next) {
   // 1) Errores que lanzamos nosotros a propósito.
@@ -41,13 +41,11 @@ export function manejadorErrores(err, _req, res, _next) {
     });
   }
 
-  // 2) Errores conocidos de SQL Server. mssql los entrega envueltos, así que
-  //    el número puede venir en el error o en su causa original.
-  const numero = err.number ?? err.originalError?.info?.number ?? err.originalError?.number;
-  const mapeado = ERRORES_SQLSERVER[numero];
+  // 2) Errores conocidos de PostgreSQL.
+  const mapeado = ERRORES_POSTGRES[err.code];
   if (mapeado) {
     const [status, mensaje] = mapeado;
-    console.error('[SQL]', numero, err.message);
+    console.error('[SQL]', err.code, err.message, err.detail ? `- ${err.detail}` : '');
     return res.status(status).json({ ok: false, error: mensaje });
   }
 

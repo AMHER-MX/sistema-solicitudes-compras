@@ -1,0 +1,16 @@
+# Railway usa Nixpacks para decidir con qué construir el proyecto. Sin este
+# archivo detecta la raíz —que no tiene package.json— y no sabe qué hacer.
+[phases.setup]
+nixPkgs = ["nodejs_20"]
+
+[phases.install]
+cmds = [
+  "npm --prefix backend ci",
+  "npm --prefix frontend ci",
+]
+
+[phases.build]
+cmds = ["npm --prefix frontend run build"]
+
+[start]
+cmd = "npm --prefix backend run start:nube"

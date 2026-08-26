@@ -85,10 +85,10 @@ console.log('\n== Altas: qué datos se rechazan ==');
 
 // Escenario base: el correo está libre, la sucursal existe, hay 3 Gerentes.
 const CORREO_LIBRE = (sql) => {
-  if (/FROM\s+dbo\.usuarios\s+WHERE\s+email\s*=\s*@email/i.test(sql)) return [];
+  if (/FROM\s+usuarios\s+WHERE\s+email\s*=\s*@email/i.test(sql)) return [];
   if (/COUNT\(\*\)\s+AS\s+total/i.test(sql)) return [{ total: 3 }];
-  if (/FROM\s+dbo\.sucursales\s+WHERE\s+id\s*=\s*@id/i.test(sql)) return [{ id: 1 }];
-  if (/FROM\s+dbo\.usuarios\s+u/i.test(sql)) {
+  if (/FROM\s+sucursales\s+WHERE\s+id\s*=\s*@id/i.test(sql)) return [{ id: 1 }];
+  if (/FROM\s+usuarios\s+u/i.test(sql)) {
     return [{ id: 7, nombre: 'Ana Ríos', email: 'ana.rios@amher.com.mx', rol: 'Vendedor', activo: true }];
   }
   return undefined;
@@ -116,13 +116,13 @@ check('Un Comprador puede ir sin sucursal', Boolean(sinSucursal.usuario));
 
 // Correo ocupado.
 definirRespuestaEnsayo((sql) => {
-  if (/FROM\s+dbo\.usuarios\s+WHERE\s+email\s*=\s*@email/i.test(sql)) return [{ id: 3, activo: true }];
+  if (/FROM\s+usuarios\s+WHERE\s+email\s*=\s*@email/i.test(sql)) return [{ id: 3, activo: true }];
   return CORREO_LIBRE(sql);
 });
 await debeFallar('Rechaza un correo ya registrado', () => alta({}), 'ya hay una cuenta');
 
 definirRespuestaEnsayo((sql) => {
-  if (/FROM\s+dbo\.usuarios\s+WHERE\s+email\s*=\s*@email/i.test(sql)) return [{ id: 3, activo: false }];
+  if (/FROM\s+usuarios\s+WHERE\s+email\s*=\s*@email/i.test(sql)) return [{ id: 3, activo: false }];
   return CORREO_LIBRE(sql);
 });
 const errorInactivo = await debeFallar('Avisa si el correo es de una cuenta desactivada', () => alta({}), 'desactivada');
@@ -135,8 +135,8 @@ console.log('\n== Seguros: no quedarse fuera del sistema ==');
 // El usuario 7 es un Gerente activo y es quien está haciendo los cambios.
 const GERENTE_7 = (gerentesRestantes) => (sql) => {
   if (/COUNT\(\*\)\s+AS\s+total/i.test(sql)) return [{ total: gerentesRestantes }];
-  if (/FROM\s+dbo\.sucursales\s+WHERE\s+id\s*=\s*@id/i.test(sql)) return [{ id: 1 }];
-  if (/FROM\s+dbo\.usuarios\s+u/i.test(sql)) {
+  if (/FROM\s+sucursales\s+WHERE\s+id\s*=\s*@id/i.test(sql)) return [{ id: 1 }];
+  if (/FROM\s+usuarios\s+u/i.test(sql)) {
     return [{ id: 7, nombre: 'Jorge Treviño', email: 'jorge@amher.com.mx', rol: 'Gerente', activo: true }];
   }
   return undefined;
@@ -173,7 +173,7 @@ check('Editar sin cambios no truena', Boolean(sinCambios));
 console.log('\n== Restablecer contraseña ==');
 
 definirRespuestaEnsayo((sql) => {
-  if (/FROM\s+dbo\.usuarios\s+u/i.test(sql)) {
+  if (/FROM\s+usuarios\s+u/i.test(sql)) {
     return [{ id: 9, nombre: 'Luis Márquez', email: 'luis@amher.com.mx', rol: 'Vendedor', activo: false }];
   }
   return undefined;
@@ -182,7 +182,7 @@ await debeFallar('No se restablece la contraseña de una cuenta desactivada',
   () => usuarios.restablecerPassword(9, 1), 'desactivada');
 
 definirRespuestaEnsayo((sql) => {
-  if (/FROM\s+dbo\.usuarios\s+u/i.test(sql)) {
+  if (/FROM\s+usuarios\s+u/i.test(sql)) {
     return [{ id: 9, nombre: 'Luis Márquez', email: 'luis@amher.com.mx', rol: 'Vendedor', activo: true }];
   }
   return undefined;
@@ -198,10 +198,10 @@ const ACTUAL = 'ClaveTemporal77';
 const HASH = await bcrypt.hash(ACTUAL, 4); // 4 rondas: esto es una prueba
 
 definirRespuestaEnsayo((sql) => {
-  if (/password_hash\s+FROM\s+dbo\.usuarios/i.test(sql)) {
+  if (/password_hash\s+FROM\s+usuarios/i.test(sql)) {
     return [{ id: 9, nombre: 'Luis Márquez', email: 'luis@amher.com.mx', password_hash: HASH }];
   }
-  if (/FROM\s+dbo\.usuarios\s+u/i.test(sql)) {
+  if (/FROM\s+usuarios\s+u/i.test(sql)) {
     return [{ id: 9, nombre: 'Luis Márquez', email: 'luis@amher.com.mx', rol: 'Vendedor', activo: true }];
   }
   return undefined;
@@ -220,7 +220,7 @@ check('Acepta una contraseña nueva válida', Boolean(cambiado));
 // Cuenta desactivada: la consulta del servicio filtra por activo = 1, así que
 // no encuentra el renglón.
 definirRespuestaEnsayo((sql) => {
-  if (/password_hash\s+FROM\s+dbo\.usuarios/i.test(sql)) return [];
+  if (/password_hash\s+FROM\s+usuarios/i.test(sql)) return [];
   return undefined;
 });
 await debeFallar('Una cuenta desactivada no puede cambiar su contraseña',

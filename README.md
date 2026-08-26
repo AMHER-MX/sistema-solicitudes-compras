@@ -3,8 +3,13 @@
 Conecta las solicitudes de los vendedores con el equipo de compras, consultando
 existencias reales del ERP (**Quiter**) y dejando bitácora de cada movimiento.
 
-**Stack:** Node.js + Express + **SQL Server** (T-SQL con `mssql`) · React (Vite) +
-Tailwind CSS + lucide-react + Axios · Autenticación JWT con bcrypt y permisos por rol.
+**Stack:** Node.js + Express + **PostgreSQL** · React (Vite) + Tailwind CSS +
+lucide-react + Axios · Autenticación JWT con bcrypt y permisos por rol ·
+Exportación a Excel con ExcelJS.
+
+**Dónde vive:** en internet (Railway), como las demás aplicaciones de la empresa.
+No necesita estar dentro de la red: las existencias las lee por
+`api.catosaapps.lat`, que es pública, igual que la app de Ventas.
 
 ---
 
@@ -29,72 +34,55 @@ levanta la solicitud sin cambiar de pantalla.
 
 ---
 
-## 2. Instalación para probar en tu computadora
-
-Se necesitan dos cosas instaladas. Ninguna cuesta nada.
+## 2. Probarlo en tu computadora
 
 ### 2.1 Node.js
 
-Descarga la versión **LTS** de <https://nodejs.org> y ejecuta el instalador con
-todas las opciones por defecto. Al terminar, **cierra y vuelve a abrir**
-PowerShell y comprueba:
+Versión 20 o superior, de [nodejs.org](https://nodejs.org). Para comprobarlo:
 
 ```powershell
 node --version
 ```
 
-Debe responder `v20...` o superior.
+### 2.2 PostgreSQL
 
-### 2.2 SQL Server Express
-
-Es el mismo motor de base de datos que usa el servidor, en su versión gratuita.
-Descárgalo de <https://www.microsoft.com/sql-server/sql-server-downloads>,
-recuadro **Express**, e instala con la opción **Basic**.
-
-### 2.3 Dejarlo configurado
-
-SQL Server Express se instala **sin TCP/IP y solo con autenticación de Windows**,
-así que tal cual queda, la aplicación no puede conectarse. En vez de diez pasos
-entre el Configuration Manager y SSMS, hay un script que lo deja listo.
-
-Abre **Windows PowerShell como administrador** y, desde la carpeta del proyecto:
+Dos caminos, el que prefieras:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File database\configurar-sqlserver-local.ps1
+# A) Docker, si ya lo tienes: levanta la base y no instala nada más
+docker compose up -d
+
+# B) PostgreSQL instalado en la máquina, desde postgresql.org
+createdb sgc_compras
 ```
 
-Enciende TCP/IP en el puerto 1433, habilita el modo mixto, crea la base
-`SGC_COMPRAS` y un usuario con permiso **únicamente sobre ella**, escribe el
-`.env` con una contraseña y una llave JWT aleatorias, y prueba la conexión.
-La contraseña la genera el script: nadie la teclea ni aparece en pantalla.
+### 2.3 Configuración
+
+```powershell
+cd backend
+copy .env.example .env
+```
+
+Abre `.env` y llena `DB_USER` y `DB_PASSWORD`. Con Docker ya vienen puestos.
 
 ### 2.4 Arrancar
-
-En una terminal **normal** (sin administrador):
 
 ```powershell
 cd backend
 npm install
-npm run db:setup
-npm run dev
+npm run db:setup          # crea las tablas y los datos de arranque
+npm run build:interfaz    # compila la interfaz
+npm start
 ```
 
-Y en otra ventana:
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-Abre <http://localhost:5173> y entra con cualquiera de estos usuarios
-(contraseña **`demo1234`** para todos):
+Abre `http://localhost:4000` y entra con cualquiera de estas cuentas
+(contraseña `demo1234`):
 
 | Correo | Rol | Qué ve |
 |---|---|---|
 | `vendedor@demo.mx` | Vendedor | Buscador de existencias y sus solicitudes |
 | `comprador@demo.mx` | Comprador | Mesa de trabajo + dashboard |
-| `gerente@demo.mx` | Gerente | Todo |
+| `gerente@demo.mx` | Gerente | Todo, incluida la administración de usuarios |
 
 ---
 
@@ -105,20 +93,14 @@ cd backend
 npm test
 ```
 
-Corre cuatro suites:
-
-| Suite | Qué revisa | ¿Necesita base de datos? |
+| Suite | Qué revisa | ¿Necesita base? |
 |---|---|---|
-| `npm run test:erp` | El adaptador de Quiter: la consulta de existencias y el mapeo de resultados | No |
-| `npm run test:usuarios` | Contraseñas y seguros de la administración de cuentas: que la temporal sea sólida, que nadie se quede fuera del sistema | No |
-| `npm run test:sql` | El SQL que emite la app: que no haya valores concatenados, que sea T-SQL y que solo escriba en las tablas propias | No |
-| `npm run smoke` | El flujo completo contra la base: alta, permisos por rol, transiciones y dashboard | Sí |
+| `npm run test:usuarios` | Contraseñas, seguros de administración y el freno de intentos | No |
+| `npm run test:sql` | El SQL que emite la app: sin valores concatenados, dialecto correcto, escrituras solo en tablas propias | No |
+| `npm run smoke` | El flujo completo contra la base: alta, permisos por rol, transiciones, dashboard y catálogos | Sí |
 
 `npm run db:estado` no es una prueba, pero sirve para lo mismo: dice en una
 línea si la base está alcanzable, si tiene el esquema y cuántos datos hay.
-
-Además, `python3 database/validar-tsql.py` (requiere `pip install sqlglot`)
-revisa que los scripts del esquema sean T-SQL válido antes de tocar la base.
 
 ---
 
@@ -126,107 +108,85 @@ revisa que los scripts del esquema sean T-SQL válido antes de tocar la base.
 
 ```
 sgc-compras/
-├── database/
-│   ├── 01_schema.sql          # tablas, PK, FK, índices, secuencia y vista (T-SQL)
-│   ├── 02_seed.sql            # datos de prueba
-│   ├── 03_migracion_usuarios.sql  # columnas de administración de cuentas
-│   └── validar-tsql.py        # revisa la sintaxis de todos los .sql, sin servidor
+├── railway.json  nixpacks.toml   # cómo se construye y arranca en el hospedaje
 │
-├── scripts/
-│   └── desplegar-servidor.ps1 # despliegue completo en el servidor (§ 10.1)
+├── database/
+│   ├── 01_schema.sql              # tablas, llaves, índices, secuencia y vista
+│   ├── 02_seed.sql                # datos de arranque
+│   └── 03_migracion_usuarios.sql  # columnas de administración de cuentas
 │
 ├── backend/
 │   ├── .env.example
 │   ├── scripts/
-│   │   ├── setupDb.js         # instala de cero: BORRA y recrea (npm run db:setup)
-│   │   ├── migrarDb.js        # agrega lo que falta, sin borrar (npm run db:migrar)
-│   │   ├── estadoDb.js        # diagnóstico de la base en JSON (npm run db:estado)
-│   │   ├── lib/sqlLotes.js    # parte los .sql por GO y los aplica
-│   │   ├── smokeTest.js       # prueba end-to-end de la API (npm run smoke)
-│   │   ├── testErpSql.js      # pruebas del adaptador de Quiter (npm run test:erp)
-│   │   ├── testUsuarios.js    # contraseñas y seguros (npm run test:usuarios)
-│   │   └── validarSql.js      # revisa el SQL emitido (npm run test:sql)
+│   │   ├── prepararNube.js    # decide solo qué hacer con la base al desplegar
+│   │   ├── setupDb.js         # instala de cero: BORRA y recrea (db:setup)
+│   │   ├── migrarDb.js        # agrega lo que falta, sin borrar (db:migrar)
+│   │   ├── estadoDb.js        # diagnóstico de la base en JSON (db:estado)
+│   │   ├── smokeTest.js       # prueba end-to-end de la API
+│   │   ├── testUsuarios.js    # contraseñas y seguros
+│   │   └── validarSql.js      # revisa el SQL emitido, sin base
 │   └── src/
-│       ├── server.js          # punto de entrada
-│       ├── app.js             # construcción de la app Express
+│       ├── server.js  app.js
 │       ├── config/
 │       │   ├── env.js         # única lectura de process.env
-│       │   └── db.js          # pool de SQL Server + transacciones + modo ensayo
+│       │   └── db.js          # pool + transacciones + parámetros con nombre
 │       ├── middleware/
-│       │   ├── auth.js        # JWT + permitirRoles()
-│       │   ├── cuenta.js      # cuenta activa + contraseña temporal, por petición
-│       │   ├── limiteIntentos.js  # freno a quien prueba contraseñas al azar
+│       │   ├── auth.js            # JWT + permitirRoles()
+│       │   ├── cuenta.js          # cuenta activa y contraseña temporal
+│       │   ├── limiteIntentos.js  # freno a quien prueba contraseñas
 │       │   └── errorHandler.js
-│       ├── routes/            # un archivo por módulo
-│       ├── controllers/       # validan entrada y responden
+│       ├── routes/  controllers/
 │       ├── services/
-│       │   ├── solicitudes.service.js   # TODO el SQL de solicitudes vive aquí
-│       │   ├── usuarios.service.js      # altas, roles, contraseñas y seguros
+│       │   ├── solicitudes.service.js   # el SQL de solicitudes
+│       │   ├── usuarios.service.js      # altas, roles y contraseñas
+│       │   ├── reportes.service.js      # las consultas de los Excel
+│       │   ├── excel.js                 # armado de los archivos .xlsx
 │       │   └── erp/
-│       │       ├── index.js             # fachada: elige el origen de datos
+│       │       ├── index.js             # fachada: API interna o simulado
 │       │       ├── quiterClient.js      # API interna de refacciones
-│       │       ├── sqlServerClient.js   # SQL Server de Quiter (solo lectura)
 │       │       └── catalogoMock.js      # catálogo simulado de respaldo
 │       └── utils/
 │           ├── estatus.js     # máquina de estados del flujo
-│           ├── password.js    # genera la temporal y valida la que elige el usuario
+│           ├── password.js    # genera la temporal y valida la elegida
 │           └── errors.js
 │
 ├── frontend/
-│   ├── vite.config.js         # proxy /api -> localhost:4000
-│   ├── public/favicon.svg     # isotipo de CATOSA para la pestaña del navegador
+│   ├── public/favicon.svg
 │   └── src/
-│       ├── main.jsx  App.jsx  index.css   # tokens de color y modo oscuro
-│       ├── api/client.js                  # Axios + JWT + manejo de 401
-│       ├── context/AuthContext.jsx        # sesión y rol
-│       ├── lib/constantes.js              # estatus, badges y formateadores
+│       ├── api/client.js                  # Axios + JWT + descargas
+│       ├── context/AuthContext.jsx
+│       ├── lib/constantes.js
 │       ├── components/
-│       │   ├── Layout.jsx
-│       │   ├── LogoCatosa.jsx             # el logo, vectorizado (ver § 4.1)
-│       │   ├── BuscadorExistencias.jsx    # consulta al ERP en tiempo real
-│       │   ├── FormularioSolicitud.jsx
-│       │   ├── PanelSeguimiento.jsx       # modal de cambio de estatus
-│       │   ├── DetalleSolicitudModal.jsx  # partidas + bitácora
-│       │   └── ui/
-│       │       ├── Primitivos.jsx         # botones, campos, badges, modal
-│       │       └── Graficos.jsx           # KPIs y barras horizontales
+│       │   ├── Layout.jsx  LogoCatosa.jsx  BotonExcel.jsx
+│       │   ├── BuscadorExistencias.jsx  FormularioSolicitud.jsx
+│       │   ├── PanelSeguimiento.jsx  DetalleSolicitudModal.jsx
+│       │   └── ui/  Primitivos.jsx  Graficos.jsx
 │       └── pages/
-│           ├── Login.jsx  VendedorPage.jsx  ComprasPage.jsx  DashboardPage.jsx
-│           ├── UsuariosPage.jsx           # administración de cuentas (Gerente)
-│           └── CambiarPassword.jsx        # cambio obligatorio y voluntario
+│           ├── Login.jsx  VendedorPage.jsx  ComprasPage.jsx
+│           ├── DashboardPage.jsx  UsuariosPage.jsx  CambiarPassword.jsx
 │
-└── docker-compose.yml         # SQL Server local en Linux/Mac (opcional)
+└── docker-compose.yml             # PostgreSQL local para desarrollo
 ```
-
 
 ### 4.1 El logo
 
 `components/LogoCatosa.jsx` trae el logo de CATOSA **vectorizado**, no como
-imagen. Eso importa por tres razones: se ve nítido en cualquier tamaño y en
-cualquier pantalla, pesa poco, y —lo principal— toma su color del texto que lo
-rodea (`fill="currentColor"`), así que el mismo archivo se ve negro en modo
-claro y blanco en modo oscuro sin tener dos versiones.
+imagen. Se ve nítido a cualquier tamaño, pesa poco y toma su color del texto
+que lo rodea (`fill="currentColor"`), así que el mismo archivo sirve en modo
+claro y en oscuro.
 
 ```jsx
-<LogoCatosa className="w-52" />                  // completo, con "CAMIONERA"
+<LogoCatosa className="w-52" />                   // completo, con "CAMIONERA"
 <LogoCatosa className="w-24" conBajada={false} /> // solo el círculo y CATOSA
 <MarcaCatosa className="w-8" />                   // solo el círculo
 ```
 
 La bajada "CAMIONERA" se apaga por debajo de unos 140px de ancho, donde ya no
-se lee y solo ensucia. Por eso la barra superior la lleva apagada y la pantalla
-de entrada encendida.
-
-Si algún día cambia el logo, se vuelve a vectorizar del original y se sustituye
-el contenido de ese archivo; ninguna pantalla necesita cambiar.
+se lee y solo ensucia.
 
 ---
 
 ## 5. Modelo de datos
-
-Las tablas viven en su **propia base** (`SGC_COMPRAS`), en el mismo servidor
-donde está Quiter. Mismo respaldo y misma administración, pero sin ninguna
-posibilidad de tocar el esquema del ERP: **a Quiter solo se le lee**.
 
 ```
 sucursales ──┐
@@ -239,7 +199,7 @@ clientes ────┘                        │
 |---|---|
 | `sucursales` | Agencias. `clave` es la clave de ALMACÉN en Quiter. |
 | `clientes` | Cliente al que se le promete el material (`codigo_erp`). |
-| `usuarios` | Acceso al sistema. `rol` ∈ Vendedor / Comprador / Gerente. `debe_cambiar_password` marca las contraseñas temporales; `creado_por` dice quién dio de alta la cuenta. |
+| `usuarios` | Acceso al sistema. `rol` ∈ Vendedor / Comprador / Gerente. `debe_cambiar_password` marca las contraseñas temporales. |
 | `solicitudes_compras` | Encabezado: folio, prioridad, estatus, promesa de entrega. |
 | `solicitudes_detalle` | Partidas. Guarda la **existencia real al momento de solicitar**. |
 | `solicitud_historial` | Bitácora: quién movió qué, cuándo y con qué comentario. |
@@ -249,14 +209,13 @@ Detalles que vale la pena conocer:
 - **Folio automático** `SC-2026-000001`, armado por una secuencia en el DEFAULT
   de la columna. No depende de la aplicación y no se puede repetir aunque dos
   vendedores capturen al mismo tiempo.
-- **Índices** para los filtros reales de la operación: por vendedor, sucursal,
-  estatus, prioridad, fecha y el compuesto `(estatus_actual, prioridad)` que usa
-  la Mesa de Trabajo.
+- **Índices** para los filtros reales de la operación, incluido el compuesto
+  `(estatus_actual, prioridad)` que usa la Mesa de Trabajo.
 - `CHECK` en `rol`, `prioridad` y `estatus_actual`: la base rechaza valores que
   no existen en el flujo.
 - `ON DELETE CASCADE` en detalle e historial; sin cascada donde borrar rompería
   la trazabilidad.
-- El cambio de estatus usa `WITH (UPDLOCK, ROWLOCK)`: dos compradores no pueden
+- El cambio de estatus usa `SELECT ... FOR UPDATE`: dos compradores no pueden
   pisarse el mismo folio.
 - De las contraseñas solo se guarda su huella (bcrypt, 10 rondas). No hay forma
   de recuperar una: se restablece y se genera otra temporal.
@@ -264,14 +223,13 @@ Detalles que vale la pena conocer:
 ### Flujo de estatus
 
 ```
-Pendiente ──► En Cotizacion ──► Autorizada ──► En Transito ──► Recibido
-     │              │                │              │
-     └──────────────┴────────────────┴──────────────┴──► Cancelada / Rechazada
+Pendiente ──> En Cotizacion ──> Autorizada ──> En Transito ──> Recibido
+    │               │                │              │
+    └───────────────┴────────────────┴──────────────┴──> Cancelada / Rechazada
 ```
 
-Las transiciones válidas están en un solo lugar (`backend/src/utils/estatus.js`)
-y el frontend las consume, así que la interfaz solo ofrece pasos legales y la
-API rechaza cualquier otro con **409**.
+Al llegar a un estatus final se sella `fecha_cierre`, que alimenta el KPI de
+tiempo promedio de atención.
 
 ---
 
@@ -285,60 +243,52 @@ requieren el header `Authorization: Bearer <token>`.
 | `GET` | `/health` | — | Estado de la base y de la integración con Quiter. |
 | `GET` | `/meta` | — | Estatus, prioridades y transiciones válidas. |
 | `POST` | `/auth/login` | — | Devuelve JWT + datos del usuario. |
-| `GET` | `/auth/yo` | todos | Perfil del token (revalidación al recargar). |
-| `POST` | `/auth/cambiar-password` | todos | Cambio de contraseña propia. Pide la actual. Devuelve un token al día. |
-| `GET` | `/productos/existencias?sku=XXX&almacen=101` | todos | **Consulta al ERP.** `sku` acepta código o texto parcial. |
-| `POST` | `/solicitudes` | Vendedor, Gerente | Crea encabezado + partidas + primer historial, en **una transacción**. |
+| `GET` | `/auth/yo` | todos | Perfil del token. |
+| `POST` | `/auth/cambiar-password` | todos | Cambio de contraseña propia. |
+| `GET` | `/productos/existencias?sku=XXX&almacen=101` | todos | **Consulta al ERP.** |
+| `POST` | `/solicitudes` | Vendedor, Gerente | Encabezado + partidas + historial, en **una transacción**. |
 | `GET` | `/solicitudes` | todos | Filtros: `id_vendedor`, `prioridad`, `estatus`, `sucursal`, `desde`, `hasta`, `busqueda`, `limite`, `pagina`. |
-| `GET` | `/solicitudes/:id` | todos | Encabezado + partidas + bitácora + siguientes estatus posibles. |
-| `PATCH` | `/solicitudes/:id/estatus` | Comprador, Gerente | Cambia estatus, fija promesa de entrega y guarda comentario. |
-| `GET` | `/dashboard/gerencia?dias=30&sucursal=1` | Comprador, Gerente | KPIs, distribución por estatus, top de faltantes y tiempo de atención. |
-| `GET` | `/catalogos/sucursales` · `/catalogos/clientes?q=` | todos | Para los selects del frontend. |
-| `GET` | `/usuarios?q=&rol=&activo=` | Gerente | Lista de cuentas. Nunca devuelve el hash de la contraseña. |
-| `POST` | `/usuarios` | Gerente | Alta. Devuelve la contraseña temporal **una sola vez**. |
-| `PATCH` | `/usuarios/:id` | Gerente | Nombre, rol, sucursal, activo. El correo no se cambia. |
-| `POST` | `/usuarios/:id/password` | Gerente | Restablece la contraseña y obliga a cambiarla al entrar. |
+| `GET` | `/solicitudes/:id` | todos | Encabezado + partidas + bitácora + siguientes estatus. |
+| `PATCH` | `/solicitudes/:id/estatus` | Comprador, Gerente | Cambia estatus, fija promesa y guarda comentario. |
+| `GET` | `/dashboard/gerencia?dias=30&sucursal=1` | Comprador, Gerente | KPIs y concentrados. |
+| `GET` | `/reportes/solicitudes` · `/reportes/historial` | todos | Excel. Un Vendedor solo baja lo suyo. |
+| `GET` | `/reportes/faltantes` · `/reportes/indicadores` | Comprador, Gerente | Excel de gestión. |
+| `GET` | `/catalogos/sucursales` · `/catalogos/clientes?q=` | todos | Para los selects. |
+| `GET` `POST` `PATCH` | `/usuarios` … | Gerente | Administración de cuentas. |
 
 Reglas de negocio que impone la API, no solo la interfaz:
 
-- Un **Vendedor** solo ve sus propias solicitudes, aunque mande otro
-  `id_vendedor` en la query.
+- Un **Vendedor** solo ve —y solo baja— sus propias solicitudes, aunque mande
+  otro `id_vendedor` en la query.
 - Un **Vendedor** no puede mover estatus (**403**).
 - Pasar a **En Transito** exige `fecha_promesa_entrega` (**400** si falta).
 - Solo se aceptan transiciones válidas del flujo (**409** en cualquier otro caso).
-- Al llegar a un estatus final se sella `fecha_cierre`, que alimenta el KPI de
-  tiempo promedio de atención.
 - Mientras alguien traiga contraseña temporal, **toda** la API le responde
   **403** con `codigo: "PASSWORD_TEMPORAL"`, salvo `/auth/yo` y
   `/auth/cambiar-password`.
 - Desactivar una cuenta surte efecto en la petición siguiente, no cuando expire
   su token: cada petición protegida revisa el renglón del usuario.
 - **Ocho contraseñas equivocadas en 15 minutos bloquean esa cuenta** (**429**)
-  el resto de la ventana. Entrar bien borra el contador. Es por cuenta, no por
-  dirección IP: detrás del túnel todas las peticiones llegan desde `127.0.0.1`,
-  así que limitar por IP dejaría fuera a toda la empresa de un golpe.
+  el resto de la ventana. Es por cuenta, no por dirección IP: detrás de un
+  proxy todas las peticiones llegan de la misma dirección, y limitar por IP
+  dejaría fuera a toda la empresa de un golpe.
 
 ---
 
 ## 7. Usuarios y accesos
 
-Quién entra al sistema lo decide el **Gerente**, desde la pestaña **Usuarios**.
-Ningún otro rol ve esa pantalla, y la API tampoco le responde.
+Quién entra lo decide el **Gerente**, desde la pestaña **Usuarios**.
 
 ### 7.1 Cómo se da de alta a alguien
 
-1. El Gerente entra a **Usuarios → Nueva cuenta** y captura nombre, correo, rol
-   y sucursal.
-2. Al guardar, el sistema genera una **contraseña temporal** de 14 caracteres y
-   la muestra en pantalla. **Es la única vez que se puede leer**: de ahí en
-   adelante solo queda guardada su huella (bcrypt), que no se puede revertir.
-3. El Gerente se la entrega a la persona.
-4. La primera vez que esa persona entra, el sistema no la deja hacer nada más
-   que elegir su propia contraseña. A partir de ahí, nadie —tampoco el
-   Gerente— puede verla.
+1. **Usuarios → Nueva cuenta**: nombre, correo, rol y sucursal.
+2. El sistema genera una **contraseña temporal** de 14 caracteres y la muestra.
+   **Es la única vez que se puede leer**: después solo queda su huella.
+3. Se la entregas a la persona.
+4. La primera vez que entra, el sistema no la deja hacer nada más que elegir su
+   propia contraseña.
 
-Si alguien la olvida: **Usuarios → Contraseña**. Se genera otra temporal y se
-repite el paso 4. No hace falta tocar la base de datos.
+Si alguien la olvida: **Usuarios → Contraseña**. Se genera otra temporal.
 
 ### 7.2 Qué puede hacer cada rol
 
@@ -349,337 +299,164 @@ repite el paso 4. No hace falta tocar la base de datos.
 | Ver solicitudes | solo las suyas | todas | todas |
 | Mover estatus | | ✓ | ✓ |
 | Dashboard | | ✓ | ✓ |
+| Bajar sus solicitudes a Excel | ✓ | ✓ | ✓ |
+| Bajar faltantes e indicadores | | ✓ | ✓ |
 | Administrar usuarios | | | ✓ |
 
 Un **Vendedor** necesita sucursal: es la que se graba en cada solicitud que
 levanta. Compras y Gerencia pueden ir sin ella.
 
+**Los compradores no están separados entre sí**: cualquiera ve y mueve todas
+las solicitudes. Por eso el jefe de compras no necesita un rol aparte — con
+`Comprador` ya supervisa a su equipo, y la bitácora dice quién hizo qué.
+
 ### 7.3 Los seguros que impiden quedarse fuera
 
-Estas reglas las aplica el servidor, no la pantalla:
+Los aplica el servidor, no la pantalla:
 
 - Un Gerente **no puede desactivar su propia cuenta** ni **cambiarse el rol**.
-  Si pudiera, perdería el acceso a la pantalla que se lo devolvería.
-- **No se puede dejar el sistema sin Gerentes activos.** El último no se
-  desactiva ni se degrada hasta que haya otro.
-- Las cuentas **no se borran, se desactivan**. El nombre de quien capturó una
-  solicitud tiene que seguir apareciendo en su bitácora; borrarlo dejaría
-  huecos justo en el registro que existe para evitarlos.
-- El **correo no se puede cambiar** después del alta: es la identidad con la
-  que quedó firmado su historial.
+- **No se puede dejar el sistema sin Gerentes activos.**
+- Las cuentas **no se borran, se desactivan**: el nombre de quien capturó una
+  solicitud tiene que seguir apareciendo en su bitácora.
+- El **correo no se puede cambiar** después del alta.
 
-### 7.4 Aplicar el cambio sobre una base que ya tiene datos
+### 7.4 Antes de abrir el sistema al equipo
 
-La pantalla de usuarios necesita tres columnas nuevas en `dbo.usuarios`. Se
-agregan sin tocar nada de lo capturado:
+Las cuatro cuentas `@demo.mx` comparten una contraseña que está escrita en este
+README.
 
-```powershell
-cd backend
-npm run db:migrar
-```
-
-Ese comando aplica `database/03_migracion_usuarios.sql`, que revisa qué falta
-antes de agregar cada cosa: **se puede correr las veces que haga falta** y no
-borra ni modifica ningún renglón existente.
-
-> `npm run db:setup` es lo contrario: instala de cero y **empieza tirando las
-> tablas**. En el servidor, una vez que haya solicitudes capturadas, el comando
-> es `db:migrar`. Nunca `db:setup`.
-
-### 7.5 Antes de abrir el sistema al equipo
-
-Las cuatro cuentas `@demo.mx` que carga el seed comparten una contraseña que
-está escrita en este README. Sirven para probar; en el servidor son una puerta
-abierta.
-
-1. Crea primero tu propia cuenta de Gerente, con tu correo real.
+1. Crea tu cuenta de Gerente con tu correo real.
 2. Entra con ella y cambia la contraseña temporal.
 3. Crea las cuentas de Compras y las de los vendedores.
-4. Entra a **Usuarios**, marca *Incluir desactivadas* para verlas todas y
-   **desactiva las cuatro cuentas `@demo.mx`**.
+4. En **Usuarios**, marca *Incluir desactivadas* y **desactiva las cuatro
+   `@demo.mx`**.
 
-Mientras alguna siga activa, la pantalla de Usuarios muestra un aviso amarillo
-y el servidor lo advierte en su bitácora al arrancar con `NODE_ENV=production`.
+Mientras alguna siga activa, la pantalla lo advierte en amarillo y el servidor
+lo dice en su bitácora al arrancar.
 
 ---
 
-## 8. De dónde salen las existencias
+## 8. Los reportes en Excel
 
-El sistema puede leer el inventario de Quiter por dos caminos. La fachada
-`src/services/erp/index.js` elige solo, en este orden:
+Cuatro descargas, desde el botón **Excel** de cada pantalla. Siempre bajan **lo
+que estás viendo**: se llevan los mismos filtros que tengas puestos.
 
-**1. SQL Server de Quiter** (si están las variables `ERPSQL_*`) — consulta
-directa con un usuario de **solo lectura**. Es el camino con más control.
+| Reporte | Dónde está | Qué trae |
+|---|---|---|
+| **Solicitudes** | Mis solicitudes · Mesa de compras | Un renglón por pieza pedida: folio, fecha, vendedor, sucursal, cliente, número de parte, cantidad, existencia al pedir, precio e importe, promesa y días abierta. |
+| **Seguimiento** | Mis solicitudes · Mesa de compras | La bitácora de cada folio, con las **horas que tardó cada paso**. Es lo que dice dónde se atora el proceso. |
+| **Faltantes** | Dashboard | Concentrado de lo que se pidió con existencia en cero: piezas, veces, cuántas sucursales lo piden e importe. |
+| **Indicadores** | Dashboard | Los números del tablero: resumen, tiempos de atención, y desglose por estatus, sucursal y vendedor. |
 
-**2. API interna de refacciones** (si está `QUITER_BASE_URL`) — usa el endpoint
-`GET /api/existencias` de `catosa-api`, que devuelve la existencia desglosada
-por almacén. **No requiere credenciales nuevas**: ese servidor ya habla con
-Quiter. Es la forma más simple de arrancar.
+Cada archivo abre listo para trabajarse: encabezado congelado, filtros puestos,
+columnas a la medida, fechas como fechas y dinero como dinero. Los totales van
+como fórmula `=SUM(...)`, no como número fijo, para que sigan cuadrando si
+alguien filtra u ordena en Excel.
 
-**3. Catálogo simulado** — si no hay nada configurado. El sistema funciona y lo
-advierte en pantalla, para poder capacitar sin tocar el ERP.
+Cada archivo lleva además una portada con quién lo bajó, cuándo y con qué
+filtros — un Excel reenviado tres veces por correo, sin eso, es un dato sin
+origen que nadie puede reproducir.
 
-Si el origen activo falla, no se cae la operación del vendedor: responde con el
-catálogo local y marca `origen: "MOCK_FALLBACK"` con un aviso visible.
+---
 
-### 8.1 Usuario de solo lectura (para el camino 1)
+## 9. De dónde salen las existencias
 
-Pedirle esto a quien administra el servidor de Quiter. El sistema **solo
-necesita leer una tabla**:
+El sistema lee el inventario de Quiter por la **API interna de refacciones**
+(`api.catosaapps.lat`), la misma que usa la app de Ventas. Ese servidor ya
+tiene la conexión al ERP, así que este sistema no necesita credenciales de base
+de datos ni estar dentro de la red.
 
-```sql
-CREATE LOGIN sgc_compras_ro WITH PASSWORD = 'UNA-CONTRASENA-LARGA-Y-UNICA';
-
-USE [NOMBRE_DE_LA_BASE_DE_QUITER];
-CREATE USER sgc_compras_ro FOR LOGIN sgc_compras_ro;
-
--- Permiso mínimo: leer el inventario de refacciones. Nada más.
-GRANT SELECT ON dbo.FTIGBI_PR TO sgc_compras_ro;
+```
+Navegador ──> SGC (Railway) ──> api.catosaapps.lat ──> Quiter (SQL Server, en la empresa)
+                    │                                        ▲
+                    └──> PostgreSQL (Railway)                 └── solo LECTURA
+                         solicitudes, usuarios, bitácora
 ```
 
-Aunque alguien comprometiera este sistema, no podría modificar ni borrar nada en
-Quiter: el usuario no tiene con qué. No usar `sa` ni una cuenta de administrador.
+Se usa `GET /api/existencias`, que devuelve la existencia **desglosada por
+almacén**. No sirve `/api/productos`: ése suma todos los almacenes en una cifra
+y no permite saber si es MI sucursal la que está en cero, que es justo lo que
+decide si se compra o se pide un traspaso.
 
-### 8.2 De dónde sale cada dato
+Si `QUITER_BASE_URL` queda vacío, el sistema muestra un **catálogo simulado** y
+lo advierte en la interfaz. Sirve para capacitar; las existencias no son reales.
 
-| Campo del sistema | Origen en Quiter |
-|---|---|
-| `sku_producto` | `FTIGBI_PR.ARTICULO` |
-| `descripcion` | `FTIGBI_PR.DES_ARTICULO` |
-| `existencia_real_almacen` | `FTIGBI_PR.EXIS_REALES` |
-| `precio_estimado` | `FTIGBI_PR.COSTO_MEDIO` |
-| `ubicacion` | `FTIGBI_PR.UBICACION` |
-| `sucursales.clave` | `FTIGBI_PR.ALMACEN` |
+### 9.1 Dos errores a NO repetir
 
-Los almacenes salen de las columnas `ALMACEN` y `NOM_ALMACEN` de la propia tabla:
+Los dos salieron de leer la tabla real de Quiter, y los dos daban resultados
+que *parecían* correctos:
 
-| Clave | Sucursal | | Clave | No es sucursal de venta |
-|---|---|---|---|---|
-| `101` | Torreón | | `102LA` | Consigna Lala |
-| `102` | Gómez Palacio | | `104CU` | Cores usados Piedras Negras |
-| `103` | Monclova | | `201RE` | Rescates 24 horas Durango |
-| `104` | Piedras Negras | | | |
-| `201` | Durango | | | |
-| `202` | Poniente | | | |
-| `203` | Zacatecas | | | |
+1. **`WHERE i.ALMACEN = 101`** comparando un número contra una columna de texto.
+   Quiter tiene almacenes como `102LA`, y al intentar convertirlos truena la
+   consulta completa.
+2. **`WHERE ... AND a LIKE @b OR c LIKE @b`** sin paréntesis. El `OR` se come el
+   filtro de almacén y la búsqueda devuelve artículos de toda la empresa.
 
-Los tres de la derecha quedan fuera de `ERPSQL_ALMACENES` a propósito: no son
-puntos de venta y contarlos inflaría la existencia disponible.
-
-### 8.3 Dos errores a NO repetir
-
-El adaptador evita dos fallas reales que tumbaron el buscador de la app de
-Ventas. `npm run test:erp` las verifica como pruebas de regresión:
-
-1. **Comparar `ALMACEN` contra un número.** La columna es texto y contiene
-   valores como `'102LA'`; escribir `WHERE ALMACEN = 101` obliga a SQL Server a
-   convertir cada renglón a entero y la consulta truena con *"Conversion failed
-   when converting the varchar value '102LA' to data type int"*.
-
-2. **Olvidar los paréntesis del `OR`.** En `AND a LIKE @b OR c LIKE @b`, el
-   `AND` tiene precedencia y la búsqueda por descripción se escapa del filtro de
-   almacén, trayendo renglones de toda la empresa.
-
-Y un tercero, propio de estos datos: **Quiter trae renglones repetidos** del
-mismo artículo en el mismo almacén. Hay que sumarlos, no listarlos por separado.
+Además, Quiter devuelve **renglones repetidos** para un mismo artículo en un
+mismo almacén. Hay que sumarlos, no listarlos por separado.
 
 ---
 
-## 9. Pendientes para producción
+## 10. Publicarlo en internet (Railway)
 
-- [ ] Cambiar `JWT_SECRET` por una cadena larga y aleatoria (§ 10.7).
-- [ ] Crear las cuentas reales y **desactivar las cuatro `@demo.mx`** (§ 7.5).
-- [ ] Crear la base `SGC_COMPRAS` en el servidor y apuntar el `.env` ahí.
+El proyecto trae `railway.json` y `nixpacks.toml`: Railway sabe leerlos y no
+hay que configurar el build a mano.
+
+### 10.1 Los pasos
+
+1. En [railway.app](https://railway.app), **New Project → Deploy from GitHub
+   repo** y elige `AMHER-MX/sistema-solicitudes-compras`.
+2. En el mismo proyecto, **New → Database → Add PostgreSQL**. Railway crea la
+   base y publica su `DATABASE_URL`.
+3. En el servicio de la aplicación, pestaña **Variables**, agrega:
+
+   | Variable | Valor |
+   |---|---|
+   | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (Railway lo ofrece al escribir `${{`) |
+   | `NODE_ENV` | `production` |
+   | `JWT_SECRET` | una cadena larga y aleatoria, distinta a la de pruebas |
+   | `QUITER_BASE_URL` | `https://api.catosaapps.lat` |
+
+4. **Settings → Networking → Generate Domain**, o conecta un dominio propio.
+
+Al desplegar, `prepararNube.js` revisa la base antes de que el servidor atienda:
+si está vacía instala el esquema, y si ya tiene datos aplica solo las
+migraciones pendientes. **Nunca borra lo capturado**, así que es seguro
+redesplegar cuantas veces haga falta.
+
+### 10.2 Actualizarlo después
+
+`git push` a `main`. Railway reconstruye y republica solo. No hay que entrar a
+ningún servidor.
+
+### 10.3 Antes de dárselo al equipo
+
+- [ ] `JWT_SECRET` propio y distinto al de pruebas.
+- [ ] `NODE_ENV=production`.
+- [ ] `/api/health` responde con la base conectada y el ERP en `QUITER_API`
+      (si dice `MOCK`, las existencias serían inventadas).
+- [ ] Tu cuenta real de Gerente creada y las cuatro `@demo.mx` desactivadas.
+
+### 10.4 Una reja más, si la quieres
+
+Cloudflare Zero Trust permite poner una puerta de identidad delante del
+dominio: quien no traiga un correo de la empresa no llega ni a ver la pantalla
+de entrada. No es obligatorio —el sistema ya pide usuario y contraseña, y ya
+frena a quien las prueba al azar—, pero para una herramienta interna es la
+diferencia entre "protegido por una contraseña" y "ni siquiera visible".
+
+---
+
+## 11. Pendientes
+
 - [ ] Notificación al vendedor cuando su solicitud cambia de estatus.
-- [ ] Exportar a Excel la Mesa de Trabajo y el top de faltantes.
 - [ ] Adjuntar cotizaciones del proveedor a la solicitud.
-- [ ] HTTPS y `CORS_ORIGIN` apuntando solo al dominio real.
-- [ ] Evaluar Cloudflare Zero Trust delante del dominio (§ 10.7).
+- [ ] Asignar una solicitud a un comprador en particular (hoy cualquiera la toma).
+- [ ] Respaldo programado de la base de Railway.
 
 ---
 
-## 10. Despliegue en el servidor
-
-El sistema se publica igual que `catosa-api`: **corriendo en el servidor Windows
-de la empresa y expuesto por el mismo túnel de Cloudflare**. No va en Railway ni
-en un servicio en la nube, porque Quiter vive en la red interna y desde afuera
-no hay cómo alcanzarlo.
-
-La diferencia con las demás apps: aquéllas son HTML sueltos que GitHub Pages
-sirve tal cual, y ésta es React, que hay que compilar. Por eso **el mismo Node
-sirve la API y la interfaz**: un solo despliegue, un solo dominio, sin CORS.
-
-### 10.1 La forma corta: un solo comando
-
-`scripts/desplegar-servidor.ps1` hace de corrido todo lo que se puede
-automatizar. Va **en el servidor**, no en la computadora de nadie: en una
-laptop solo dejaría una segunda instalación que no le sirve a nadie.
-
-En el servidor, con PowerShell **como Administrador**:
-
-```powershell
-# 1. Traer el código (solo la primera vez)
-git clone https://github.com/AMHER-MX/sistema-solicitudes-compras.git C:\apps\sgc-compras
-cd C:\apps\sgc-compras
-
-# 2. Primero mirar, sin tocar nada
-powershell -ExecutionPolicy Bypass -File .\scripts\desplegar-servidor.ps1 -SoloRevisar
-
-# 3. Y ya con el diagnóstico a la vista
-powershell -ExecutionPolicy Bypass -File .\scripts\desplegar-servidor.ps1
-```
-
-> **Por qué `-ExecutionPolicy Bypass`.** Windows Server viene de fábrica
-> negándose a ejecutar archivos `.ps1`; el error dice *"no se puede cargar
-> porque la ejecución de scripts está deshabilitada en este sistema"*. Ese
-> parámetro levanta la restricción **solo para esa corrida**, sin cambiar la
-> configuración del servidor — que es justo lo que se quiere: no dejar la
-> puerta abierta para después.
-
-De la primera vez en adelante ya no hace falta clonar: el script mismo
-actualiza el código con `git pull`.
-
-Qué hace, en orden: revisa Node y Git · clona o actualiza el código · prepara
-el `.env` (pide solo lo que no puede adivinar y **genera la llave JWT él mismo**,
-sin que nadie la vea ni la teclee) · instala dependencias con `npm ci` ·
-**diagnostica la base y decide**: instala el esquema si está vacía o solo migra
-si ya tiene datos · corre las pruebas · compila la interfaz · arranca la
-aplicación un momento y comprueba `/api/health` · registra la tarea de Windows
-para que sobreviva a un reinicio.
-
-Lo importante de ese punto medio: la decisión de la base **no la toma quien
-corre el script**, la toma `npm run db:estado` mirando lo que hay. `db:setup`
-empieza tirando las tablas, y correrlo por error sobre una base en uso borraría
-todas las solicitudes capturadas. El script nunca lo corre sobre una base con
-datos.
-
-Se puede correr las veces que haga falta: en una instalación ya montada,
-actualiza el código y la base sin tocar el `.env`.
-
-Lo que **no** hace, porque es configuración de red y a ciegas sería peligroso:
-la entrada en `cloudflared` y el registro DNS (§ 10.3). Al terminar imprime
-exactamente qué falta, con las líneas listas para copiar.
-
-### 10.2 Preparar la aplicación a mano
-
-```powershell
-cd backend
-npm install
-npm run build:interfaz     # compila el frontend a frontend/dist
-npm start
-```
-
-Al arrancar, la consola dice si encontró la interfaz compilada. Si la ve, todo
-—pantallas y datos— sale por el mismo puerto.
-
-### 10.3 Publicarla por el túnel de Cloudflare
-
-En el archivo de configuración de `cloudflared` (el mismo que ya publica
-`api.catosaapps.lat`) se agrega una entrada más en `ingress`:
-
-```yaml
-ingress:
-  - hostname: api.catosaapps.lat
-    service: http://localhost:3000        # catosa-api, como está hoy
-  - hostname: compras.catosaapps.lat      # ← el sistema de Compras
-    service: http://localhost:4000
-  - service: http_status:404              # esta va siempre al final
-```
-
-Y se crea el registro DNS:
-
-```powershell
-cloudflared tunnel route dns <nombre-del-tunel> compras.catosaapps.lat
-```
-
-Un mismo túnel puede publicar todos los servicios que quieras; no hace falta
-levantar otro.
-
-### 10.4 Que siga corriendo al reiniciar
-
-Node no se queda como servicio por sí solo. Usa **el mismo mecanismo con el que
-ya se mantiene `catosa-api`** — lo importante es que sea uno solo para las dos,
-para no tener que acordarse de dos formas distintas. Las opciones habituales son
-NSSM (`nssm install SGC-Compras`), una tarea programada al inicio del sistema
-con *"Ejecutar aunque el usuario no haya iniciado sesión"*, o PM2.
-
-### 10.5 El `.env` de producción
-
-Cambia respecto al de pruebas:
-
-```env
-NODE_ENV=production
-CORS_ORIGIN=https://compras.catosaapps.lat
-DB_HOST=<servidor de SQL Server>
-DB_DATABASE=SGC_COMPRAS
-DB_USER=<usuario con permiso solo sobre esa base>
-DB_PASSWORD="<contraseña entre comillas>"
-JWT_SECRET="<cadena larga y aleatoria, distinta a la de pruebas>"
-```
-
-La base `SGC_COMPRAS` se crea en el mismo SQL Server donde está Quiter, pero es
-una base **aparte**: mismo respaldo y misma administración, sin posibilidad de
-tocar el esquema del ERP.
-
-> **Las contraseñas van entre comillas en el `.env`.** Sin ellas, un `#` en la
-> contraseña se interpreta como inicio de comentario y el valor llega cortado;
-> el error que aparece es *"Login failed for user"*, que no da ninguna pista.
-
-
-### 10.6 Antes de crear el registro DNS
-
-El momento en que existe `compras.catosaapps.lat` es el momento en que el
-formulario de entrada queda expuesto a internet. Estas cuatro cosas van
-**antes**, no después:
-
-**1. Una llave JWT propia del servidor.** La de pruebas es un valor por omisión
-que está escrito en el código: quien lo lea puede fabricarse un token de
-Gerente. Este comando genera una nueva y la escribe en el `.env` sin que nadie
-tenga que verla ni teclearla:
-
-```powershell
-cd backend
-$llave = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 64 | ForEach-Object {[char]$_})
-Add-Content .env "JWT_SECRET=`"$llave`""
-Remove-Variable llave
-```
-
-Si ya había una línea `JWT_SECRET` en el `.env`, borra la vieja: dotenv se
-queda con la primera. Cambiar la llave cierra todas las sesiones abiertas
-—eso es justo lo que se busca.
-
-**2. `NODE_ENV=production` y `CORS_ORIGIN=https://compras.catosaapps.lat`.**
-Con `NODE_ENV` en producción, los errores dejan de incluir el detalle técnico
-en la respuesta y el servidor avisa en su bitácora si quedaron cuentas de
-prueba vivas.
-
-**3. Las cuentas reales creadas y las cuatro `@demo.mx` desactivadas** (§ 7.5).
-Mientras `gerente@demo.mx` siga activa, la contraseña de esa cuenta está
-escrita en este README.
-
-**4. Comprobar que responde antes de publicarlo.** Con el servicio corriendo:
-
-```powershell
-curl http://localhost:4000/api/health
-```
-
-Debe contestar `"conectada": true` y decir que el ERP está en `SQLSERVER`.
-
-### 10.7 Una reja más, si la quieres
-
-Cloudflare Zero Trust permite poner una puerta de identidad **delante** del
-sistema: quien no traiga un correo de la empresa no llega ni a ver la pantalla
-de entrada. Es una configuración en el panel de Cloudflare, del lado del túnel
-que ya tienen, y no requiere tocar el código.
-
-No es obligatorio —el sistema ya pide usuario y contraseña, y ya frena a quien
-las prueba al azar—, pero para una herramienta interna que no necesita ser
-alcanzable desde cualquier parte del mundo, es la diferencia entre "protegido
-por una contraseña" y "ni siquiera visible".
-
----
-
-## 11. Subir cambios a GitHub
+## 12. Subir cambios a GitHub
 
 El repositorio es **https://github.com/AMHER-MX/sistema-solicitudes-compras** (privado).
 
@@ -691,4 +468,4 @@ git push
 
 `.gitignore` ya excluye `node_modules/`, los archivos `.env` y los builds, así
 que **no se suben credenciales**. Los `.env.example` sí se suben: son la
-plantilla para que cada persona arme su propio `.env`.
+plantilla para armar el propio.

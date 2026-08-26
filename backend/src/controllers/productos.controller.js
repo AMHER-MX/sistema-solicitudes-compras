@@ -19,7 +19,7 @@ export async function existencias(req, res) {
   let almacen = (req.query.almacen ?? '').toString().trim();
   if (!almacen && req.usuario?.sucursal_id) {
     const suc = await queryUno(
-      'SELECT clave FROM dbo.sucursales WHERE id = @id',
+      'SELECT clave FROM sucursales WHERE id = @id',
       { id: req.usuario.sucursal_id },
     );
     almacen = suc?.clave || '';

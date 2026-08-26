@@ -1,5 +1,5 @@
 /**
- * Capa de acceso a datos de las solicitudes de compra (SQL Server).
+ * Capa de acceso a datos de las solicitudes de compra (PostgreSQL).
  * Aquí vive todo el SQL; los controladores solo validan y responden.
  *
  * Reglas que se respetan en todo el archivo:
@@ -8,7 +8,7 @@
  *     código (@est0, @est1, ...), jamás algo que venga del usuario.
  *   - Las escrituras que deben ser atómicas van dentro de withTransaction.
  */
-import { T, query, queryUno, withTransaction } from '../config/db.js';
+import { query, queryUno, withTransaction } from '../config/db.js';
 import { ESTATUS, ESTATUS_FINALES } from '../utils/estatus.js';
 import { notFound } from '../utils/errors.js';
 import { existenciaDeSku } from './erp/index.js';
@@ -34,7 +34,7 @@ const SELECT_CABECERA = `
     s.estatus_actual,
     s.observaciones,
     s.fecha_creacion,
-    CONVERT(VARCHAR(10), s.fecha_promesa_entrega, 23) AS fecha_promesa_entrega,
+    TO_CHAR(s.fecha_promesa_entrega, 'YYYY-MM-DD') AS fecha_promesa_entrega,
     s.fecha_cierre,
     s.id_comprador_asignado,
     s.actualizado_en,
@@ -45,11 +45,11 @@ const SELECT_CABECERA = `
     comp.nombre AS comprador_nombre`;
 
 const FROM_CABECERA = `
-  FROM      dbo.solicitudes_compras s
-  JOIN      dbo.usuarios   u    ON u.id    = s.id_vendedor
-  JOIN      dbo.sucursales su   ON su.id   = s.id_sucursal
-  LEFT JOIN dbo.clientes   c    ON c.id    = s.id_cliente
-  LEFT JOIN dbo.usuarios   comp ON comp.id = s.id_comprador_asignado`;
+  FROM      solicitudes_compras s
+  JOIN      usuarios   u    ON u.id    = s.id_vendedor
+  JOIN      sucursales su   ON su.id   = s.id_sucursal
+  LEFT JOIN clientes   c    ON c.id    = s.id_cliente
+  LEFT JOIN usuarios   comp ON comp.id = s.id_comprador_asignado`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ALTA
@@ -90,17 +90,17 @@ export async function crearSolicitud(datos) {
   return withTransaction(async (ejecutar) => {
     // 1) Encabezado. El folio lo genera el DEFAULT de la columna.
     const [cabecera] = await ejecutar(
-      `INSERT INTO dbo.solicitudes_compras
+      `INSERT INTO solicitudes_compras
          (id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual, observaciones)
-       OUTPUT INSERTED.*
-       VALUES (@vendedor, @sucursal, @cliente, @prioridad, @estatus, @observaciones)`,
+              VALUES (@vendedor, @sucursal, @cliente::int, @prioridad, @estatus, @observaciones::text)
+       RETURNING *`,
       {
         vendedor: id_vendedor,
         sucursal: id_sucursal,
-        cliente: { tipo: T.Int, valor: id_cliente },
+        cliente: id_cliente,
         prioridad,
         estatus: ESTATUS.PENDIENTE,
-        observaciones: { tipo: T.NVarChar, valor: observaciones },
+        observaciones: observaciones,
       },
     );
 
@@ -108,18 +108,18 @@ export async function crearSolicitud(datos) {
     const detalle = [];
     for (const it of itemsConExistencia) {
       const [fila] = await ejecutar(
-        `INSERT INTO dbo.solicitudes_detalle
+        `INSERT INTO solicitudes_detalle
            (id_solicitud, sku_producto, descripcion, cantidad_solicitada,
             existencia_real_almacen, precio_estimado)
-         OUTPUT INSERTED.*
-         VALUES (@solicitud, @sku, @descripcion, @cantidad, @existencia, @precio)`,
+                  VALUES (@solicitud, @sku, @descripcion, @cantidad, @existencia, @precio::numeric)
+         RETURNING *`,
         {
           solicitud: cabecera.id,
           sku: it.sku_producto,
           descripcion: it.descripcion,
-          cantidad: { tipo: T.Decimal(12, 2), valor: Number(it.cantidad_solicitada) },
-          existencia: { tipo: T.Decimal(12, 2), valor: Number(it.existencia_real_almacen) },
-          precio: { tipo: T.Decimal(12, 2), valor: it.precio_estimado ?? null },
+          cantidad: Number(it.cantidad_solicitada),
+          existencia: Number(it.existencia_real_almacen),
+          precio: it.precio_estimado ?? null,
         },
       );
       detalle.push(fila);
@@ -127,7 +127,7 @@ export async function crearSolicitud(datos) {
 
     // 3) Primer movimiento del historial: nace en 'Pendiente'.
     await ejecutar(
-      `INSERT INTO dbo.solicitud_historial
+      `INSERT INTO solicitud_historial
          (id_solicitud, id_usuario, estatus_anterior, estatus_nuevo, comentario)
        VALUES (@solicitud, @usuario, NULL, @estatus, @comentario)`,
       {
@@ -163,13 +163,15 @@ export async function listarSolicitudes(filtros = {}) {
   if (id_vendedor) { params.vendedor = Number(id_vendedor); where.push('s.id_vendedor = @vendedor'); }
   if (sucursal)    { params.sucursal = Number(sucursal);    where.push('s.id_sucursal = @sucursal'); }
   if (prioridad)   { params.prioridad = prioridad;          where.push('s.prioridad = @prioridad'); }
-  if (desde)       { params.desde = { tipo: T.DateTime2, valor: new Date(desde) }; where.push('s.fecha_creacion >= @desde'); }
-  if (hasta)       { params.hasta = { tipo: T.DateTime2, valor: new Date(hasta) }; where.push('s.fecha_creacion <= @hasta'); }
+  if (desde)       { params.desde = new Date(desde); where.push('s.fecha_creacion >= @desde'); }
+  if (hasta)       { params.hasta = new Date(hasta); where.push('s.fecha_creacion <= @hasta'); }
 
   // Búsqueda libre por folio o nombre de cliente.
   if (busqueda) {
     params.busqueda = `%${busqueda}%`;
-    where.push('(s.folio LIKE @busqueda OR c.nombre LIKE @busqueda)');
+    // ILIKE, no LIKE: en PostgreSQL, LIKE distingue mayúsculas de minúsculas.
+    // Quien busca "norte" espera encontrar "Transportes del Norte".
+    where.push('(s.folio ILIKE @busqueda OR c.nombre ILIKE @busqueda)');
   }
 
   // `estatus` acepta uno o varios separados por coma: ?estatus=Pendiente,Autorizada
@@ -195,12 +197,12 @@ export async function listarSolicitudes(filtros = {}) {
   return query(`
     SELECT ${SELECT_CABECERA},
            COUNT(d.id)                                                        AS total_partidas,
-           ISNULL(SUM(d.cantidad_solicitada), 0)                              AS total_piezas,
-           ISNULL(SUM(d.cantidad_solicitada * ISNULL(d.precio_estimado, 0)), 0) AS monto_estimado,
+           COALESCE(SUM(d.cantidad_solicitada), 0)                              AS total_piezas,
+           COALESCE(SUM(d.cantidad_solicitada * COALESCE(d.precio_estimado, 0)), 0) AS monto_estimado,
            -- Días transcurridos desde el alta (resalta las solicitudes añejas)
-           ROUND(DATEDIFF(SECOND, s.fecha_creacion, SYSUTCDATETIME()) / 86400.0, 1) AS dias_abierta
+           ROUND((EXTRACT(EPOCH FROM (NOW() - s.fecha_creacion)) / 86400.0)::NUMERIC, 1) AS dias_abierta
     ${FROM_CABECERA}
-    LEFT JOIN dbo.solicitudes_detalle d ON d.id_solicitud = s.id
+    LEFT JOIN solicitudes_detalle d ON d.id_solicitud = s.id
     ${clausula}
     GROUP BY s.id, s.folio, s.id_vendedor, s.id_sucursal, s.id_cliente, s.prioridad,
              s.estatus_actual, s.observaciones, s.fecha_creacion, s.fecha_promesa_entrega,
@@ -209,7 +211,7 @@ export async function listarSolicitudes(filtros = {}) {
     ORDER BY -- Urgente primero, luego lo más viejo arriba
              CASE s.prioridad WHEN 'Urgente' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END,
              s.fecha_creacion ASC
-    OFFSET @offset ROWS FETCH NEXT @limite ROWS ONLY
+    LIMIT @limite OFFSET @offset
   `, params);
 }
 
@@ -224,14 +226,14 @@ export async function obtenerSolicitud(id) {
 
   const [detalle, historial] = await Promise.all([
     query(
-      `SELECT * FROM dbo.solicitudes_detalle
+      `SELECT * FROM solicitudes_detalle
        WHERE id_solicitud = @id ORDER BY id`,
       { id: Number(id) },
     ),
     query(
       `SELECT h.*, u.nombre AS usuario_nombre, u.rol AS usuario_rol
-       FROM      dbo.solicitud_historial h
-       JOIN      dbo.usuarios u ON u.id = h.id_usuario
+       FROM      solicitud_historial h
+       JOIN      usuarios u ON u.id = h.id_usuario
        WHERE     h.id_solicitud = @id
        ORDER BY  h.fecha_movimiento ASC, h.id ASC`,
       { id: Number(id) },
@@ -248,16 +250,19 @@ export async function obtenerSolicitud(id) {
 /**
  * Actualiza el estatus, la fecha promesa y deja constancia en el historial.
  *
- * El SELECT lleva WITH (UPDLOCK, ROWLOCK): reserva el renglón hasta que
- * termine la transacción, para que dos compradores no muevan el mismo folio
- * al mismo tiempo.
+ * El SELECT lleva FOR UPDATE: reserva el renglón hasta que termine la
+ * transacción, para que dos compradores no muevan el mismo folio al mismo
+ * tiempo. Sin eso, los dos leerían "Pendiente", los dos verían la transición
+ * como válida, y el segundo pisaría al primero dejando el historial con un
+ * movimiento que nunca ocurrió.
  */
 export async function cambiarEstatus({ id, id_usuario, estatus_nuevo, comentario, fecha_promesa_entrega, asignarme }) {
   return withTransaction(async (ejecutar) => {
     const [actual] = await ejecutar(
       `SELECT id, estatus_actual
-       FROM   dbo.solicitudes_compras WITH (UPDLOCK, ROWLOCK)
-       WHERE  id = @id`,
+       FROM   solicitudes_compras
+       WHERE  id = @id
+       FOR UPDATE`,
       { id: Number(id) },
     );
     if (!actual) throw notFound(`No existe la solicitud ${id}`);
@@ -269,38 +274,37 @@ export async function cambiarEstatus({ id, id_usuario, estatus_nuevo, comentario
     const cierra = ESTATUS_FINALES.includes(estatus_nuevo);
 
     const [actualizada] = await ejecutar(
-      `UPDATE dbo.solicitudes_compras
+      `UPDATE solicitudes_compras
           SET estatus_actual        = @estatus,
-              fecha_promesa_entrega = ISNULL(@promesa, fecha_promesa_entrega),
-              fecha_cierre          = CASE WHEN @cierra = 1 THEN SYSUTCDATETIME() ELSE fecha_cierre END,
-              id_comprador_asignado = CASE WHEN @asignar = 1 THEN @usuario ELSE id_comprador_asignado END,
-              actualizado_en        = SYSUTCDATETIME()
-        OUTPUT INSERTED.id, INSERTED.folio, INSERTED.id_vendedor, INSERTED.id_sucursal,
-               INSERTED.id_cliente, INSERTED.prioridad, INSERTED.estatus_actual,
-               INSERTED.observaciones, INSERTED.fecha_creacion,
-               CONVERT(VARCHAR(10), INSERTED.fecha_promesa_entrega, 23) AS fecha_promesa_entrega,
-               INSERTED.fecha_cierre, INSERTED.id_comprador_asignado, INSERTED.actualizado_en
-        WHERE id = @id`,
+              fecha_promesa_entrega = COALESCE(@promesa::date, fecha_promesa_entrega),
+              fecha_cierre          = CASE WHEN @cierra THEN NOW() ELSE fecha_cierre END,
+              id_comprador_asignado = CASE WHEN @asignar THEN @usuario ELSE id_comprador_asignado END,
+              actualizado_en        = NOW()
+        WHERE id = @id
+    RETURNING id, folio, id_vendedor, id_sucursal, id_cliente, prioridad,
+              estatus_actual, observaciones, fecha_creacion,
+              TO_CHAR(fecha_promesa_entrega, 'YYYY-MM-DD') AS fecha_promesa_entrega,
+              fecha_cierre, id_comprador_asignado, actualizado_en`,
       {
         estatus: estatus_nuevo,
-        promesa: { tipo: T.Date, valor: fecha_promesa_entrega || null },
-        cierra: { tipo: T.Bit, valor: cierra },
-        asignar: { tipo: T.Bit, valor: Boolean(asignarme) },
+        promesa: fecha_promesa_entrega || null,
+        cierra: cierra,
+        asignar: Boolean(asignarme),
         usuario: id_usuario,
         id: Number(id),
       },
     );
 
     await ejecutar(
-      `INSERT INTO dbo.solicitud_historial
+      `INSERT INTO solicitud_historial
          (id_solicitud, id_usuario, estatus_anterior, estatus_nuevo, comentario)
-       VALUES (@id, @usuario, @anterior, @nuevo, @comentario)`,
+       VALUES (@id, @usuario, @anterior::text, @nuevo, @comentario::text)`,
       {
         id: Number(id),
         usuario: id_usuario,
-        anterior: { tipo: T.NVarChar, valor: estatus_anterior },
+        anterior: estatus_anterior,
         nuevo: estatus_nuevo,
-        comentario: { tipo: T.NVarChar, valor: comentario || null },
+        comentario: comentario || null,
       },
     );
 
@@ -328,12 +332,12 @@ export async function metricasGerencia({ dias = 30, sucursal } = {}) {
     filtroSucursal = ' AND s.id_sucursal = @sucursal';
   }
 
-  const ventana = `s.fecha_creacion >= DATEADD(DAY, -@dias, SYSUTCDATETIME())${filtroSucursal}`;
+  const ventana = `s.fecha_creacion >= NOW() - (@dias * INTERVAL '1 day')${filtroSucursal}`;
 
   // 1) Conteo por estatus
   const porEstatus = query(`
     SELECT s.estatus_actual AS estatus, COUNT(*) AS total
-    FROM   dbo.solicitudes_compras s
+    FROM   solicitudes_compras s
     WHERE  ${ventana}
     GROUP BY s.estatus_actual
     ORDER BY total DESC`, params);
@@ -341,30 +345,30 @@ export async function metricasGerencia({ dias = 30, sucursal } = {}) {
   // 2) Conteo por prioridad
   const porPrioridad = query(`
     SELECT s.prioridad, COUNT(*) AS total
-    FROM   dbo.solicitudes_compras s
+    FROM   solicitudes_compras s
     WHERE  ${ventana}
     GROUP BY s.prioridad`, params);
 
   // 3) Productos más solicitados SIN existencia al momento de pedirlos
   const topFaltantes = query(`
-    SELECT TOP (10)
+    SELECT
            d.sku_producto,
            MIN(d.descripcion)          AS descripcion,
            COUNT(DISTINCT s.id)        AS veces_solicitado,
            SUM(d.cantidad_solicitada)  AS piezas_solicitadas,
            COUNT(DISTINCT s.id_sucursal) AS sucursales_afectadas
-    FROM   dbo.solicitudes_detalle d
-    JOIN   dbo.solicitudes_compras s ON s.id = d.id_solicitud
+    FROM   solicitudes_detalle d
+    JOIN   solicitudes_compras s ON s.id = d.id_solicitud
     WHERE  d.existencia_real_almacen <= 0 AND ${ventana}
     GROUP BY d.sku_producto
     ORDER BY veces_solicitado DESC, piezas_solicitadas DESC`, params);
 
   // 4) Tiempo promedio de atención (solo solicitudes cerradas)
   const tiempos = query(`
-    SELECT ROUND(AVG(CAST(DATEDIFF(SECOND, s.fecha_creacion, s.fecha_cierre) AS DECIMAL(18,4))) / 3600.0, 1)  AS horas_promedio,
-           ROUND(AVG(CAST(DATEDIFF(SECOND, s.fecha_creacion, s.fecha_cierre) AS DECIMAL(18,4))) / 86400.0, 1) AS dias_promedio,
+    SELECT ROUND((AVG(EXTRACT(EPOCH FROM (s.fecha_cierre - s.fecha_creacion))) / 3600.0)::NUMERIC, 1)  AS horas_promedio,
+           ROUND((AVG(EXTRACT(EPOCH FROM (s.fecha_cierre - s.fecha_creacion))) / 86400.0)::NUMERIC, 1) AS dias_promedio,
            COUNT(*) AS solicitudes_cerradas
-    FROM   dbo.solicitudes_compras s
+    FROM   solicitudes_compras s
     WHERE  s.fecha_cierre IS NOT NULL AND ${ventana}`, params);
 
   // 5) Totales e indicadores de riesgo
@@ -373,13 +377,13 @@ export async function metricasGerencia({ dias = 30, sucursal } = {}) {
            SUM(CASE WHEN s.estatus_actual NOT IN ${CERRADOS_SQL} THEN 1 ELSE 0 END) AS abiertas,
            SUM(CASE WHEN s.prioridad = 'Urgente'
                      AND s.estatus_actual NOT IN ${CERRADOS_SQL} THEN 1 ELSE 0 END) AS urgentes_abiertas,
-           SUM(CASE WHEN s.fecha_promesa_entrega < CAST(SYSUTCDATETIME() AS DATE)
+           SUM(CASE WHEN s.fecha_promesa_entrega < CURRENT_DATE
                      AND s.estatus_actual NOT IN ${CERRADOS_SQL} THEN 1 ELSE 0 END) AS vencidas,
-           ISNULL(SUM(sub.monto), 0) AS monto_estimado_total
-    FROM   dbo.solicitudes_compras s
+           COALESCE(SUM(sub.monto), 0) AS monto_estimado_total
+    FROM   solicitudes_compras s
     LEFT JOIN (
-      SELECT id_solicitud, SUM(cantidad_solicitada * ISNULL(precio_estimado, 0)) AS monto
-      FROM   dbo.solicitudes_detalle GROUP BY id_solicitud
+      SELECT id_solicitud, SUM(cantidad_solicitada * COALESCE(precio_estimado, 0)) AS monto
+      FROM   solicitudes_detalle GROUP BY id_solicitud
     ) sub ON sub.id_solicitud = s.id
     WHERE  ${ventana}`, params);
 
@@ -388,8 +392,8 @@ export async function metricasGerencia({ dias = 30, sucursal } = {}) {
     SELECT su.clave, su.nombre,
            COUNT(*) AS total,
            SUM(CASE WHEN s.estatus_actual NOT IN ${CERRADOS_SQL} THEN 1 ELSE 0 END) AS abiertas
-    FROM   dbo.solicitudes_compras s
-    JOIN   dbo.sucursales su ON su.id = s.id_sucursal
+    FROM   solicitudes_compras s
+    JOIN   sucursales su ON su.id = s.id_sucursal
     WHERE  ${ventana}
     GROUP BY su.clave, su.nombre
     ORDER BY total DESC`, params);

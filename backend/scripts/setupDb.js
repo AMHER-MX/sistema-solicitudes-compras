@@ -1,5 +1,5 @@
 /**
- * Instala el esquema DESDE CERO y carga los datos de prueba en SQL Server.
+ * Instala el esquema DESDE CERO y carga los datos de prueba en PostgreSQL.
  *
  *   cd backend && npm run db:setup
  *
@@ -8,9 +8,9 @@
  *    Si la base ya está en uso y solo quieres agregar lo nuevo, usa:
  *        npm run db:migrar
  *
- * Requiere que la base indicada en DB_DATABASE ya exista. Para crearla:
- *   sqlcmd -S localhost -U sa -P tuPassword -Q "CREATE DATABASE SGC_COMPRAS"
- * o desde SQL Server Management Studio: clic derecho en Databases -> New Database.
+ * Requiere que la base ya exista. En Railway la crea el propio servicio de
+ * PostgreSQL; en una computadora local:
+ *   createdb sgc_compras
  */
 import { cerrarPool, obtenerPool } from '../src/config/db.js';
 import { env } from '../src/config/env.js';
@@ -30,14 +30,14 @@ async function main() {
     await aplicarArchivo(pool, archivo);
   }
 
-  const [conteos] = (await pool.request().query(`
-    SELECT (SELECT COUNT(*) FROM dbo.usuarios)             AS usuarios,
-           (SELECT COUNT(*) FROM dbo.sucursales)           AS sucursales,
-           (SELECT COUNT(*) FROM dbo.clientes)             AS clientes,
-           (SELECT COUNT(*) FROM dbo.solicitudes_compras)  AS solicitudes,
-           (SELECT COUNT(*) FROM dbo.solicitudes_detalle)  AS partidas,
-           (SELECT COUNT(*) FROM dbo.solicitud_historial)  AS historial
-  `)).recordset;
+  const [conteos] = (await pool.query(`
+    SELECT (SELECT COUNT(*) FROM usuarios)             AS usuarios,
+           (SELECT COUNT(*) FROM sucursales)           AS sucursales,
+           (SELECT COUNT(*) FROM clientes)             AS clientes,
+           (SELECT COUNT(*) FROM solicitudes_compras)  AS solicitudes,
+           (SELECT COUNT(*) FROM solicitudes_detalle)  AS partidas,
+           (SELECT COUNT(*) FROM solicitud_historial)  AS historial
+  `)).rows;
 
   console.log('\nRegistros cargados:', conteos);
   console.log('\nUsuarios de prueba (password: demo1234)');

@@ -32,7 +32,7 @@ export const cuentaVigente = asyncHandler(async (req, _res, next) => {
   if (!req.usuario) return next(unauthorized());
 
   const fila = await queryUno(
-    'SELECT activo, debe_cambiar_password FROM dbo.usuarios WHERE id = @id',
+    'SELECT activo, debe_cambiar_password FROM usuarios WHERE id = @id',
     { id: req.usuario.id },
   );
 

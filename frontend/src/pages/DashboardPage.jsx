@@ -15,6 +15,7 @@ import {
   Alerta, Boton, Cargando, Select, Tarjeta, TarjetaEncabezado,
 } from '../components/ui/Primitivos.jsx';
 import { catalogosApi, dashboardApi } from '../api/client.js';
+import BotonExcel from '../components/BotonExcel.jsx';
 import { ESTILO_ESTATUS, moneda, numero } from '../lib/constantes.js';
 
 const VENTANAS = [
@@ -83,6 +84,18 @@ export default function DashboardPage() {
               {sucursales.map((s) => <option key={s.id} value={s.id}>{s.nombre}</option>)}
             </Select>
           </div>
+          <BotonExcel
+            tipo="indicadores"
+            etiqueta="Indicadores"
+            filtros={{ dias, sucursal: sucursal || undefined }}
+            onError={setError}
+          />
+          <BotonExcel
+            tipo="faltantes"
+            etiqueta="Faltantes"
+            filtros={{ dias, sucursal: sucursal || undefined }}
+            onError={setError}
+          />
           <Boton variante="secundario" icono={RefreshCw} onClick={cargar}>Actualizar</Boton>
         </div>
       </div>

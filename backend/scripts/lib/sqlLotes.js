@@ -12,57 +12,50 @@ const aqui = path.dirname(fileURLToPath(import.meta.url));
 export const DIR_SQL = path.resolve(aqui, '..', '..', '..', 'database');
 
 /**
- * Parte un script en lotes por la palabra GO.
+ * Aplica un archivo .sql completo, de una sola vez.
  *
- * GO no es SQL: es el separador de lotes que entienden sqlcmd y SSMS, pero el
- * driver no lo reconoce. Hay que mandar cada lote por separado — y además es
- * obligatorio, porque instrucciones como CREATE VIEW deben ir solas en su lote.
+ * A diferencia de SQL Server —donde había que partir el archivo por la palabra
+ * GO— PostgreSQL acepta varias instrucciones en una sola llamada. Y aquí eso
+ * no es solo comodidad: los bloques `DO $$ ... $$` llevan punto y coma adentro,
+ * así que cualquier intento de partir el archivo por separadores lo rompería a
+ * la mitad.
+ *
+ * @param {object}  pool          Pool de pg ya conectado.
+ * @param {string}  archivo       Nombre del archivo dentro de `database/`.
+ * @param {boolean} [mostrarAvisos] Imprime los RAISE NOTICE del script.
  */
-export function partirEnLotes(sql) {
-  return sql
-    .split(/^\s*GO\s*$/gim)
-    .map((lote) => lote.trim())
-    .filter((lote) => lote.length > 0);
-}
-
-/**
- * Aplica un archivo .sql lote por lote.
- *
- * Si un lote falla, reporta cuál fue y muestra su SQL: sin eso, el error de
- * SQL Server llega sin contexto y no hay forma de saber qué instrucción tronó.
- *
- * @param {object}  pool            Pool de mssql ya conectado.
- * @param {string}  archivo         Nombre del archivo dentro de `database/`.
- * @param {boolean} [mostrarPrint]  Imprime los mensajes PRINT del script.
- */
-export async function aplicarArchivo(pool, archivo, mostrarPrint = false) {
+export async function aplicarArchivo(pool, archivo, mostrarAvisos = false) {
   const contenido = await fs.readFile(path.join(DIR_SQL, archivo), 'utf8');
-  const lotes = partirEnLotes(contenido);
 
-  if (mostrarPrint) {
-    console.log(`  → ${archivo} (${lotes.length} lotes)`);
-  } else {
-    process.stdout.write(`  → ${archivo} (${lotes.length} lotes) ... `);
-  }
+  process.stdout.write(`  → ${archivo} ... `);
 
-  for (const [i, lote] of lotes.entries()) {
-    const peticion = pool.request();
-    // Los PRINT del script llegan como eventos 'info', no como resultados.
-    if (mostrarPrint) peticion.on('info', (m) => console.log(`    ${m.message}`));
+  const cliente = await pool.connect();
+  // Los RAISE NOTICE del script llegan como eventos, no como resultados.
+  const alAvisar = (aviso) => {
+    if (mostrarAvisos && aviso?.message) console.log(`\n    ${aviso.message}`);
+  };
+  cliente.on('notice', alAvisar);
 
-    try {
-      await peticion.batch(lote);
-    } catch (error) {
-      console.log(mostrarPrint ? '' : 'FALLÓ');
-      console.error(`\nError en el lote ${i + 1} de ${archivo}:`);
-      console.error(`  ${error.message}\n`);
-      console.error('SQL del lote:');
-      console.error(lote.split('\n').slice(0, 25).join('\n'));
-      throw error;
+  try {
+    await cliente.query(contenido);
+    console.log('OK');
+  } catch (error) {
+    console.log('FALLÓ');
+    console.error(`\nError aplicando ${archivo}:`);
+    console.error(`  ${error.message}`);
+    // PostgreSQL dice en qué carácter del texto tronó: con eso se puede
+    // señalar la línea exacta, que es lo único que ahorra tiempo aquí.
+    if (error.position) {
+      const hasta = contenido.slice(0, Number(error.position));
+      const linea = hasta.split('\n').length;
+      console.error(`  en la línea ${linea} de ${archivo}:`);
+      console.error(`    ${contenido.split('\n')[linea - 1]?.trim()}`);
     }
+    throw error;
+  } finally {
+    cliente.off('notice', alAvisar);
+    cliente.release();
   }
-
-  if (!mostrarPrint) console.log('OK');
 }
 
 /**

@@ -13,6 +13,7 @@ import {
   Alerta, Badge, Boton, Cargando, EstadoVacio, Input, Select, Tarjeta, TarjetaEncabezado,
 } from '../components/ui/Primitivos.jsx';
 import { catalogosApi, solicitudesApi } from '../api/client.js';
+import BotonExcel from '../components/BotonExcel.jsx';
 import {
   ESTATUS, ESTATUS_FINALES, ESTILO_ESTATUS, ESTILO_PRIORIDAD, PRIORIDADES,
   fecha, moneda, numero,
@@ -87,7 +88,14 @@ export default function ComprasPage() {
           icono={ClipboardList}
           titulo="Mesa de trabajo · Compras"
           descripcion={`${solicitudes.length} solicitud(es) en pantalla${urgentesAbiertas ? ` · ${urgentesAbiertas} urgente(s) por resolver` : ''}`}
-          acciones={<Boton variante="fantasma" icono={RefreshCw} onClick={cargar}>Actualizar</Boton>}
+          acciones={(
+            <div className="flex gap-2">
+              {/* Los mismos filtros que la tabla: lo que se ve es lo que se baja. */}
+              <BotonExcel tipo="solicitudes" etiqueta="Excel" filtros={filtros} onError={setError} />
+              <BotonExcel tipo="historial" etiqueta="Seguimiento" filtros={filtros} onError={setError} />
+              <Boton variante="fantasma" icono={RefreshCw} onClick={cargar}>Actualizar</Boton>
+            </div>
+          )}
         />
 
         {/* ── Filtros: una sola fila arriba de la tabla ── */}

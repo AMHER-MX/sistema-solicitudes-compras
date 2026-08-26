@@ -7,7 +7,6 @@ import { RUTA_INTERFAZ, crearApp } from './app.js';
 import { env } from './config/env.js';
 import { cerrarPool, probarConexion } from './config/db.js';
 import { estadoErp } from './services/erp/index.js';
-import { cerrarPoolSqlServer } from './services/erp/sqlServerClient.js';
 import { cuentasDemoActivas } from './services/usuarios.service.js';
 
 /**
@@ -54,21 +53,18 @@ const servidor = app.listen(env.port, async () => {
 
   const erp = await estadoErp();
   const descripcionErp = {
-    SQLSERVER: () => `SQL Server ${erp.sql_server.host}/${erp.sql_server.base_datos}` +
-                     ` — almacenes ${erp.sql_server.almacenes.join(', ')}` +
-                     ` — ${erp.sql_server.conectado ? 'conectado' : `SIN CONEXIÓN (${erp.sql_server.error})`}`,
-    QUITER_API: () => `API ${erp.api.base_url}`,
+    QUITER_API: () => `API de refacciones ${erp.api.base_url}`,
     MOCK: () => 'NO configurado (usando catálogo simulado)',
   }[erp.origen];
   console.log(` ERP        : ${descripcionErp()}`);
 
   try {
     const hora = await probarConexion();
-    console.log(` SQL Server : conectado (${hora.toISOString()})`);
+    console.log(` Base       : conectada (${hora.toISOString()})`);
     await avisarCuentasDemo();
   } catch (e) {
-    console.error(` SQL Server : SIN CONEXIÓN -> ${e.message}`);
-    console.error('   Revisa las variables DB_* en tu archivo .env');
+    console.error(` Base       : SIN CONEXIÓN -> ${e.message}`);
+    console.error('   Revisa DATABASE_URL o las variables DB_* en tu archivo .env');
   }
   console.log('──────────────────────────────────────────────');
 });
@@ -77,7 +73,7 @@ const servidor = app.listen(env.port, async () => {
 const cerrar = (senal) => async () => {
   console.log(`\n[${senal}] Cerrando servidor...`);
   servidor.close(async () => {
-    await Promise.allSettled([cerrarPool(), cerrarPoolSqlServer()]);
+    await cerrarPool();
     process.exit(0);
   });
 };

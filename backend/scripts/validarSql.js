@@ -6,11 +6,11 @@
  * Cómo funciona: arranca la app en modo ensayo (SGC_DRY_RUN=1), donde cada
  * consulta se registra en lugar de ejecutarse. Después se recorre cada consulta
  * capturada y se comprueban las reglas que sí se pueden verificar en frío:
- * que no haya valores concatenados, que se usen construcciones de SQL Server
- * y no de PostgreSQL, y que las escrituras vayan donde deben.
+ * que no haya valores concatenados, que el dialecto sea PostgreSQL y no hayan
+ * quedado restos de SQL Server, y que las escrituras vayan donde deben.
  *
- * OJO: esto NO sustituye correrlo contra un SQL Server de verdad. Detecta
- * errores de forma, no de fondo.
+ * OJO: esto NO sustituye correr `npm run smoke` contra una base de verdad.
+ * Detecta errores de forma, no de fondo.
  */
 process.env.SGC_DRY_RUN = '1';
 
@@ -63,13 +63,13 @@ const PASSWORD_ACTUAL = 'ClaveTemporal77';
 const HASH_ACTUAL = await bcrypt.hash(PASSWORD_ACTUAL, 4); // 4 rondas: es una prueba
 
 definirRespuestaEnsayo((sql) => {
-  if (/FROM\s+dbo\.usuarios\s+WHERE\s+email\s*=\s*@email/i.test(sql)) return [];          // el correo está libre
+  if (/FROM\s+usuarios\s+WHERE\s+email\s*=\s*@email/i.test(sql)) return [];          // el correo está libre
   if (/COUNT\(\*\)\s+AS\s+total/i.test(sql)) return [{ total: 3 }];                        // hay más Gerentes
-  if (/FROM\s+dbo\.sucursales\s+WHERE\s+id\s*=\s*@id/i.test(sql)) return [{ id: 1 }];      // la sucursal existe
-  if (/password_hash\s+FROM\s+dbo\.usuarios/i.test(sql)) {
+  if (/FROM\s+sucursales\s+WHERE\s+id\s*=\s*@id/i.test(sql)) return [{ id: 1 }];      // la sucursal existe
+  if (/password_hash\s+FROM\s+usuarios/i.test(sql)) {
     return [{ id: 7, nombre: 'Ana Ríos', email: 'ana.rios@amher.com.mx', password_hash: HASH_ACTUAL }];
   }
-  if (/FROM\s+dbo\.usuarios\s+u/i.test(sql)) {
+  if (/FROM\s+usuarios\s+u/i.test(sql)) {
     return [{ id: 7, nombre: 'Ana Ríos', email: 'ana.rios@amher.com.mx', rol: 'Vendedor', activo: true }];
   }
   return undefined;
@@ -103,12 +103,12 @@ check('Ningún valor del usuario acaba dentro del texto del SQL',
   filtrado.length ? `(${filtrado[0].slice(0, 90)}...)` : '');
 
 check('Todas las consultas usan parámetros con @',
-  sqlEmitido.every((s) => !/\b(SELECT|INSERT|UPDATE)\b/i.test(s) || /@\w+/.test(s) || /SYSUTCDATETIME/.test(s)));
+  sqlEmitido.every((s) => !/\b(SELECT|INSERT|UPDATE)\b/i.test(s) || /@\w+/.test(s) || /NOW\(\)/.test(s)));
 
 console.log('\n== Contraseñas ==');
 
 // Ni la contraseña ni su hash pueden acabar dentro del texto de una consulta:
-// ahí quedarían en cualquier log de SQL Server que alguien active.
+// ahí quedarían en cualquier registro de consultas que alguien active.
 const secretos = [PASSWORD_ACTUAL, 'MiClaveNueva2026', HASH_ACTUAL, '$2a$', '$2b$'];
 const conSecretos = sqlEmitido.filter((s) => secretos.some((v) => s.includes(v)));
 check('Ninguna contraseña ni hash aparece en el texto del SQL',
@@ -118,7 +118,7 @@ check('Ninguna contraseña ni hash aparece en el texto del SQL',
 // El listado de administración no debe traer el hash: si no se selecciona,
 // no se puede filtrar por accidente en una respuesta JSON.
 const lecturasDeUsuarios = sqlEmitido.filter((s) =>
-  /^\s*SELECT/i.test(s) && /dbo\.usuarios\s+u\b/i.test(s));
+  /^\s*SELECT/i.test(s) && /usuarios\s+u\b/i.test(s));
 check('El listado de usuarios no selecciona password_hash',
   lecturasDeUsuarios.length > 0 && !lecturasDeUsuarios.some((s) => /u\.password_hash/i.test(s)),
   `(${lecturasDeUsuarios.length} lecturas)`);
@@ -126,45 +126,46 @@ check('El listado de usuarios no selecciona password_hash',
 // Al cambiar o restablecer, siempre se escribe la bandera y la fecha junto
 // con el hash. Si se olvidara, el usuario quedaría obligado a cambiar la
 // contraseña para siempre —o nunca.
-const cambiosDePassword = sqlEmitido.filter((s) => /UPDATE\s+dbo\.usuarios/i.test(s) && /password_hash\s*=/i.test(s));
+const cambiosDePassword = sqlEmitido.filter((s) => /UPDATE\s+usuarios/i.test(s) && /password_hash\s*=/i.test(s));
 check('Todo cambio de contraseña actualiza la bandera y la fecha',
   cambiosDePassword.length >= 2
   && cambiosDePassword.every((s) => /debe_cambiar_password\s*=/i.test(s) && /password_actualizado_en\s*=/i.test(s)),
   `(${cambiosDePassword.length} cambios)`);
 
-console.log('\n== Dialecto: debe ser SQL Server, no PostgreSQL ==');
+console.log('\n== Dialecto: debe ser PostgreSQL, no SQL Server ==');
 
-const rastrosPostgres = [
-  [/\$\d/, 'parámetros estilo $1'],
-  [/\bILIKE\b/i, 'ILIKE'],
-  [/\bRETURNING\b/i, 'RETURNING'],
-  [/\bLIMIT\b/i, 'LIMIT'],
-  [/\bNOW\(\)/i, 'NOW()'],
-  [/::\w+/, 'casts con ::'],
-  [/\bFILTER\s*\(/i, 'agregados con FILTER'],
-  [/\bEXTRACT\s*\(\s*EPOCH/i, 'EXTRACT(EPOCH'],
-  [/\bON CONFLICT\b/i, 'ON CONFLICT'],
-  [/\bFOR UPDATE\b/i, 'SELECT ... FOR UPDATE'],
-  [/\bSERIAL\b/i, 'SERIAL'],
-  [/\bTIMESTAMPTZ\b/i, 'TIMESTAMPTZ'],
+// Restos de la etapa en SQL Server. Si alguno reaparece, la consulta truena
+// contra PostgreSQL —y probablemente hasta que alguien la use en producción.
+const restosDeSqlServer = [
+  [/\bOUTPUT\s+INSERTED\b/i, 'OUTPUT INSERTED'],
+  [/\bFETCH\s+NEXT\b/i, 'FETCH NEXT'],
+  [/\bUPDLOCK\b/i, 'UPDLOCK'],
+  [/\bSYSUTCDATETIME\b/i, 'SYSUTCDATETIME()'],
+  [/\bISNULL\s*\(/i, 'ISNULL()'],
+  [/\bDATEDIFF\s*\(/i, 'DATEDIFF()'],
+  [/\bDATEADD\s*\(/i, 'DATEADD()'],
+  [/\bSELECT\s+TOP\b/i, 'SELECT TOP'],
+  [/\bdbo\./i, 'el esquema dbo.'],
+  [/\bNVARCHAR\b/i, 'NVARCHAR'],
+  [/\bSCOPE_IDENTITY\b/i, 'SCOPE_IDENTITY()'],
 ];
 
-for (const [patron, nombre] of rastrosPostgres) {
+for (const [patron, nombre] of restosDeSqlServer) {
   const culpables = sqlEmitido.filter((s) => patron.test(s));
   check(`Sin ${nombre}`, culpables.length === 0,
     culpables.length ? `(${culpables[0].slice(0, 80).replace(/\s+/g, ' ')}...)` : '');
 }
 
-console.log('\n== Construcciones esperadas de SQL Server ==');
+console.log('\n== Construcciones esperadas de PostgreSQL ==');
 
 const alguna = (patron) => sqlEmitido.some((s) => patron.test(s));
 
-check('Los INSERT devuelven la fila con OUTPUT INSERTED', alguna(/OUTPUT\s+INSERTED\./i));
-check('La paginación usa OFFSET ... FETCH NEXT', alguna(/OFFSET\s+@offset\s+ROWS\s+FETCH\s+NEXT\s+@limite\s+ROWS\s+ONLY/i));
-check('El bloqueo de renglón usa WITH (UPDLOCK, ROWLOCK)', alguna(/WITH\s*\(\s*UPDLOCK\s*,\s*ROWLOCK\s*\)/i));
-check('Los tiempos se calculan con DATEDIFF', alguna(/DATEDIFF\s*\(\s*SECOND/i));
-check('Las fechas usan SYSUTCDATETIME', alguna(/SYSUTCDATETIME\(\)/i));
-check('El top de faltantes usa TOP (n)', alguna(/SELECT\s+TOP\s*\(\s*10\s*\)/i));
+check('Los INSERT devuelven la fila con RETURNING', alguna(/RETURNING/i));
+check('La paginación usa LIMIT ... OFFSET', alguna(/LIMIT\s+@limite\s+OFFSET\s+@offset/i));
+check('El bloqueo de renglón usa FOR UPDATE', alguna(/FOR\s+UPDATE/i));
+check('Los tiempos se calculan con EXTRACT(EPOCH ...)', alguna(/EXTRACT\s*\(\s*EPOCH/i));
+check('Las fechas usan NOW()', alguna(/NOW\(\)/i));
+check('Las búsquedas de texto usan ILIKE', alguna(/ILIKE/i));
 check('Los conteos condicionales usan SUM(CASE WHEN ...)', alguna(/SUM\s*\(\s*CASE\s+WHEN/i));
 
 console.log('\n== Solo se escribe en las tablas propias ==');
@@ -174,7 +175,7 @@ const tablasQuiter = /\b(FTIGBI_PR|FTSABI_PR|FMCUBI_PR|FTPDCBI_PR)\b/i;
 check('Ninguna consulta toca tablas de Quiter', !sqlEmitido.some((s) => tablasQuiter.test(s)));
 
 const escrituras = sqlEmitido.filter((s) => /^\s*(INSERT|UPDATE|DELETE)/i.test(s));
-const tablasPropias = /dbo\.(solicitudes_compras|solicitudes_detalle|solicitud_historial|usuarios|clientes|sucursales)/i;
+const tablasPropias = /\b(solicitudes_compras|solicitudes_detalle|solicitud_historial|usuarios|clientes|sucursales)\b/i;
 check('Toda escritura va a una tabla del sistema',
   escrituras.length > 0 && escrituras.every((s) => tablasPropias.test(s)),
   `(${escrituras.length} escrituras)`);

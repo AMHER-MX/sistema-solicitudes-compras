@@ -36,15 +36,15 @@ async function main() {
 
   // Resumen de cómo quedó la tabla de usuarios: es lo que el operador quiere
   // ver para confirmar que no se perdió ninguna cuenta.
-  const [resumen] = (await pool.request().query(`
+  const [resumen] = (await pool.query(`
     SELECT COUNT(*)                                              AS total,
-           SUM(CASE WHEN activo = 1 THEN 1 ELSE 0 END)           AS activos,
-           SUM(CASE WHEN rol = 'Gerente'   AND activo = 1 THEN 1 ELSE 0 END) AS gerentes,
-           SUM(CASE WHEN rol = 'Comprador' AND activo = 1 THEN 1 ELSE 0 END) AS compradores,
-           SUM(CASE WHEN rol = 'Vendedor'  AND activo = 1 THEN 1 ELSE 0 END) AS vendedores,
-           SUM(CASE WHEN debe_cambiar_password = 1 THEN 1 ELSE 0 END)        AS con_password_temporal
-    FROM dbo.usuarios
-  `)).recordset;
+           COUNT(*) FILTER (WHERE activo)                        AS activos,
+           COUNT(*) FILTER (WHERE rol = 'Gerente'   AND activo) AS gerentes,
+           COUNT(*) FILTER (WHERE rol = 'Comprador' AND activo) AS compradores,
+           COUNT(*) FILTER (WHERE rol = 'Vendedor'  AND activo) AS vendedores,
+           COUNT(*) FILTER (WHERE debe_cambiar_password)        AS con_password_temporal
+    FROM usuarios
+  `)).rows;
 
   console.log('\nUsuarios después de migrar:', resumen);
   console.log('\nListo. Ninguna solicitud fue modificada.');

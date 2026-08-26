@@ -6,6 +6,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { CalendarClock, ClipboardList, FileSearch, RefreshCw } from 'lucide-react';
+import BotonExcel from '../components/BotonExcel.jsx';
 import BuscadorExistencias from '../components/BuscadorExistencias.jsx';
 import DetalleSolicitudModal from '../components/DetalleSolicitudModal.jsx';
 import FormularioSolicitud from '../components/FormularioSolicitud.jsx';
@@ -82,9 +83,13 @@ export default function VendedorPage() {
           titulo="Mis solicitudes"
           descripcion="Estado de todo lo que has enviado a compras"
           acciones={
-            <Boton variante="fantasma" icono={RefreshCw} onClick={cargar}>
-              Actualizar
-            </Boton>
+            <div className="flex gap-2">
+              <BotonExcel tipo="solicitudes" etiqueta="Excel" onError={setError} />
+              <BotonExcel tipo="historial" etiqueta="Seguimiento" onError={setError} />
+              <Boton variante="fantasma" icono={RefreshCw} onClick={cargar}>
+                Actualizar
+              </Boton>
+            </div>
           }
         />
 
