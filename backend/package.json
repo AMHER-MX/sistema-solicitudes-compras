@@ -11,6 +11,7 @@
     "build:interfaz": "npm --prefix ../frontend install && npm --prefix ../frontend run build",
     "db:setup": "node scripts/setupDb.js",
     "db:migrar": "node scripts/migrarDb.js",
+    "db:estado": "node scripts/estadoDb.js",
     "smoke": "node scripts/smokeTest.js",
     "test:erp": "node scripts/testErpSql.js",
     "test": "node scripts/testErpSql.js && node scripts/testUsuarios.js && node scripts/validarSql.js && node scripts/smokeTest.js",

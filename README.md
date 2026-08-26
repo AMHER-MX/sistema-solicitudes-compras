@@ -114,6 +114,9 @@ Corre cuatro suites:
 | `npm run test:sql` | El SQL que emite la app: que no haya valores concatenados, que sea T-SQL y que solo escriba en las tablas propias | No |
 | `npm run smoke` | El flujo completo contra la base: alta, permisos por rol, transiciones y dashboard | Sí |
 
+`npm run db:estado` no es una prueba, pero sirve para lo mismo: dice en una
+línea si la base está alcanzable, si tiene el esquema y cuántos datos hay.
+
 Además, `python3 database/validar-tsql.py` (requiere `pip install sqlglot`)
 revisa que los scripts del esquema sean T-SQL válido antes de tocar la base.
 
@@ -129,11 +132,15 @@ sgc-compras/
 │   ├── 03_migracion_usuarios.sql  # columnas de administración de cuentas
 │   └── validar-tsql.py        # revisa la sintaxis de todos los .sql, sin servidor
 │
+├── scripts/
+│   └── desplegar-servidor.ps1 # despliegue completo en el servidor (§ 10.1)
+│
 ├── backend/
 │   ├── .env.example
 │   ├── scripts/
 │   │   ├── setupDb.js         # instala de cero: BORRA y recrea (npm run db:setup)
 │   │   ├── migrarDb.js        # agrega lo que falta, sin borrar (npm run db:migrar)
+│   │   ├── estadoDb.js        # diagnóstico de la base en JSON (npm run db:estado)
 │   │   ├── lib/sqlLotes.js    # parte los .sql por GO y los aplica
 │   │   ├── smokeTest.js       # prueba end-to-end de la API (npm run smoke)
 │   │   ├── testErpSql.js      # pruebas del adaptador de Quiter (npm run test:erp)
@@ -480,14 +487,14 @@ mismo artículo en el mismo almacén. Hay que sumarlos, no listarlos por separad
 
 ## 9. Pendientes para producción
 
-- [ ] Cambiar `JWT_SECRET` por una cadena larga y aleatoria (§ 10.5).
+- [ ] Cambiar `JWT_SECRET` por una cadena larga y aleatoria (§ 10.7).
 - [ ] Crear las cuentas reales y **desactivar las cuatro `@demo.mx`** (§ 7.5).
 - [ ] Crear la base `SGC_COMPRAS` en el servidor y apuntar el `.env` ahí.
 - [ ] Notificación al vendedor cuando su solicitud cambia de estatus.
 - [ ] Exportar a Excel la Mesa de Trabajo y el top de faltantes.
 - [ ] Adjuntar cotizaciones del proveedor a la solicitud.
 - [ ] HTTPS y `CORS_ORIGIN` apuntando solo al dominio real.
-- [ ] Evaluar Cloudflare Zero Trust delante del dominio (§ 10.6).
+- [ ] Evaluar Cloudflare Zero Trust delante del dominio (§ 10.7).
 
 ---
 
@@ -498,11 +505,62 @@ de la empresa y expuesto por el mismo túnel de Cloudflare**. No va en Railway n
 en un servicio en la nube, porque Quiter vive en la red interna y desde afuera
 no hay cómo alcanzarlo.
 
-La diferencia con las demás apps: aquélla son HTML sueltos que GitHub Pages
+La diferencia con las demás apps: aquéllas son HTML sueltos que GitHub Pages
 sirve tal cual, y ésta es React, que hay que compilar. Por eso **el mismo Node
 sirve la API y la interfaz**: un solo despliegue, un solo dominio, sin CORS.
 
-### 10.1 Preparar la aplicación
+### 10.1 La forma corta: un solo comando
+
+`scripts/desplegar-servidor.ps1` hace de corrido todo lo que se puede
+automatizar. Va **en el servidor**, no en la computadora de nadie: en una
+laptop solo dejaría una segunda instalación que no le sirve a nadie.
+
+En el servidor, con PowerShell **como Administrador**:
+
+```powershell
+# 1. Traer el código (solo la primera vez)
+git clone https://github.com/AMHER-MX/sistema-solicitudes-compras.git C:\apps\sgc-compras
+cd C:\apps\sgc-compras
+
+# 2. Primero mirar, sin tocar nada
+powershell -ExecutionPolicy Bypass -File .\scripts\desplegar-servidor.ps1 -SoloRevisar
+
+# 3. Y ya con el diagnóstico a la vista
+powershell -ExecutionPolicy Bypass -File .\scripts\desplegar-servidor.ps1
+```
+
+> **Por qué `-ExecutionPolicy Bypass`.** Windows Server viene de fábrica
+> negándose a ejecutar archivos `.ps1`; el error dice *"no se puede cargar
+> porque la ejecución de scripts está deshabilitada en este sistema"*. Ese
+> parámetro levanta la restricción **solo para esa corrida**, sin cambiar la
+> configuración del servidor — que es justo lo que se quiere: no dejar la
+> puerta abierta para después.
+
+De la primera vez en adelante ya no hace falta clonar: el script mismo
+actualiza el código con `git pull`.
+
+Qué hace, en orden: revisa Node y Git · clona o actualiza el código · prepara
+el `.env` (pide solo lo que no puede adivinar y **genera la llave JWT él mismo**,
+sin que nadie la vea ni la teclee) · instala dependencias con `npm ci` ·
+**diagnostica la base y decide**: instala el esquema si está vacía o solo migra
+si ya tiene datos · corre las pruebas · compila la interfaz · arranca la
+aplicación un momento y comprueba `/api/health` · registra la tarea de Windows
+para que sobreviva a un reinicio.
+
+Lo importante de ese punto medio: la decisión de la base **no la toma quien
+corre el script**, la toma `npm run db:estado` mirando lo que hay. `db:setup`
+empieza tirando las tablas, y correrlo por error sobre una base en uso borraría
+todas las solicitudes capturadas. El script nunca lo corre sobre una base con
+datos.
+
+Se puede correr las veces que haga falta: en una instalación ya montada,
+actualiza el código y la base sin tocar el `.env`.
+
+Lo que **no** hace, porque es configuración de red y a ciegas sería peligroso:
+la entrada en `cloudflared` y el registro DNS (§ 10.3). Al terminar imprime
+exactamente qué falta, con las líneas listas para copiar.
+
+### 10.2 Preparar la aplicación a mano
 
 ```powershell
 cd backend
@@ -514,7 +572,7 @@ npm start
 Al arrancar, la consola dice si encontró la interfaz compilada. Si la ve, todo
 —pantallas y datos— sale por el mismo puerto.
 
-### 10.2 Publicarla por el túnel de Cloudflare
+### 10.3 Publicarla por el túnel de Cloudflare
 
 En el archivo de configuración de `cloudflared` (el mismo que ya publica
 `api.catosaapps.lat`) se agrega una entrada más en `ingress`:
@@ -537,7 +595,7 @@ cloudflared tunnel route dns <nombre-del-tunel> compras.catosaapps.lat
 Un mismo túnel puede publicar todos los servicios que quieras; no hace falta
 levantar otro.
 
-### 10.3 Que siga corriendo al reiniciar
+### 10.4 Que siga corriendo al reiniciar
 
 Node no se queda como servicio por sí solo. Usa **el mismo mecanismo con el que
 ya se mantiene `catosa-api`** — lo importante es que sea uno solo para las dos,
@@ -545,7 +603,7 @@ para no tener que acordarse de dos formas distintas. Las opciones habituales son
 NSSM (`nssm install SGC-Compras`), una tarea programada al inicio del sistema
 con *"Ejecutar aunque el usuario no haya iniciado sesión"*, o PM2.
 
-### 10.4 El `.env` de producción
+### 10.5 El `.env` de producción
 
 Cambia respecto al de pruebas:
 
@@ -568,7 +626,7 @@ tocar el esquema del ERP.
 > el error que aparece es *"Login failed for user"*, que no da ninguna pista.
 
 
-### 10.5 Antes de crear el registro DNS
+### 10.6 Antes de crear el registro DNS
 
 El momento en que existe `compras.catosaapps.lat` es el momento en que el
 formulario de entrada queda expuesto a internet. Estas cuatro cosas van
@@ -607,7 +665,7 @@ curl http://localhost:4000/api/health
 
 Debe contestar `"conectada": true` y decir que el ERP está en `SQLSERVER`.
 
-### 10.6 Una reja más, si la quieres
+### 10.7 Una reja más, si la quieres
 
 Cloudflare Zero Trust permite poner una puerta de identidad **delante** del
 sistema: quien no traiga un correo de la empresa no llega ni a ver la pantalla
