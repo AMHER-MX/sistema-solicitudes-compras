@@ -63,6 +63,18 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
+<#
+    Que git falle rápido en lugar de quedarse esperando.
+
+    Contra un repositorio privado, git pide usuario y contraseña. Dentro de un
+    script eso es lo peor que puede pasar: la consola se queda muda, sin cursor
+    ni mensaje, y no hay forma de saber si está trabajando o colgado. Con estas
+    dos variables git contesta con un error claro en vez de esperar para
+    siempre, y el script puede explicar qué falta.
+#>
+$env:GIT_TERMINAL_PROMPT = '0'
+$env:GCM_INTERACTIVE = 'never'
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Presentación
 # ─────────────────────────────────────────────────────────────────────────────
@@ -149,6 +161,24 @@ if ($esAdministrador) {
     Escribir-Aviso 'No estás como Administrador: el paso del servicio de Windows se va a saltar.'
 }
 
+# ¿Esta máquina puede autenticarse contra el repositorio? Se pregunta aquí,
+# antes de necesitarlo, para no descubrirlo a la mitad del despliegue.
+$hayAccesoAlRepo = $false
+try {
+    git ls-remote --heads $Repositorio $Rama 2>&1 | Out-Null
+    $hayAccesoAlRepo = ($LASTEXITCODE -eq 0)
+} catch { $hayAccesoAlRepo = $false }
+
+if ($hayAccesoAlRepo) {
+    Escribir-Ok 'GitHub responde y las credenciales sirven.'
+} else {
+    Escribir-Aviso 'Esta máquina no puede leer el repositorio (es privado y no hay credenciales guardadas).'
+    Escribir-Dato 'Arréglalo con una de estas, y vuelve a correr esto:'
+    Escribir-Dato '  · git clone <url> una vez a mano, para que Windows guarde la credencial, o'
+    Escribir-Dato '  · un token de acceso personal de GitHub con permiso de solo lectura, o'
+    Escribir-Dato '  · una llave SSH de despliegue y usar la URL git@github.com:...'
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 Escribir-Titulo 'Código'
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,7 +198,10 @@ if (-not $hayRepo) {
         $padre = Split-Path -Parent $Ruta
         if (-not (Test-Path $padre)) { New-Item -ItemType Directory -Path $padre -Force | Out-Null }
         git clone --branch $Rama $Repositorio $Ruta
-        if ($LASTEXITCODE -ne 0) { Detener 'Falló el clonado. Revisa tus credenciales de GitHub.' }
+        if ($LASTEXITCODE -ne 0) {
+            Detener ('Falló el clonado. Casi siempre es que esta máquina no tiene credenciales de GitHub: ' +
+                     'clona una vez a mano para que Windows las guarde, o usa un token de acceso personal.')
+        }
         Escribir-Ok "Repositorio clonado en $Ruta"
     }
 } else {
@@ -179,16 +212,34 @@ if (-not $hayRepo) {
             Escribir-Aviso 'Hay cambios locales sin guardar en el servidor. No se actualiza el código para no pisarlos.'
             Escribir-Dato 'Revísalos con: git status'
         } elseif ($SoloRevisar) {
-            git fetch --quiet origin $Rama 2>&1 | Out-Null
-            $atras = git rev-list --count "HEAD..origin/$Rama" 2>$null
-            if ($atras -and [int]$atras -gt 0) {
-                Escribir-Dato "Hay $atras commit(s) nuevos en GitHub sin aplicar."
+            if (-not $hayAccesoAlRepo) {
+                Escribir-Dato 'No se puede consultar GitHub desde aquí; no sé si el código está al día.'
             } else {
-                Escribir-Ok 'El código está al día.'
+                # Si algo falla, no es motivo para detener una revisión: se dice
+                # y se sigue. Lo único que se pierde es saber si hay commits nuevos.
+                $pudo = $false
+                try {
+                    git fetch --quiet origin $Rama 2>&1 | Out-Null
+                    $pudo = ($LASTEXITCODE -eq 0)
+                } catch { $pudo = $false }
+
+                if (-not $pudo) {
+                    Escribir-Aviso 'No se pudo consultar GitHub. Sigo con lo que hay en disco.'
+                } else {
+                    $atras = git rev-list --count "HEAD..origin/$Rama" 2>$null
+                    if ($atras -and [int]$atras -gt 0) {
+                        Escribir-Dato "Hay $atras commit(s) nuevos en GitHub sin aplicar."
+                    } else {
+                        Escribir-Ok 'El código está al día.'
+                    }
+                }
             }
         } else {
             git pull --ff-only origin $Rama
-            if ($LASTEXITCODE -ne 0) { Detener 'Falló el git pull. Revísalo a mano.' }
+            if ($LASTEXITCODE -ne 0) {
+                Detener ('Falló el git pull. Si no dio más detalle, suele ser falta de credenciales de GitHub ' +
+                         'en esta máquina. Corre "git pull" a mano aquí para ver el error completo.')
+            }
             Escribir-Ok 'Código actualizado.'
         }
         Escribir-Dato ("Commit: " + (git log -1 --format='%h %s'))
