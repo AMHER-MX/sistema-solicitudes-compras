@@ -9,7 +9,10 @@
  *   cd backend && npm run smoke
  */
 import { crearApp } from '../src/app.js';
-import { cerrarPool } from '../src/config/db.js';
+import { cerrarPool, query } from '../src/config/db.js';
+// El vencimiento se prueba llamando al vigía a mano: esperar 30 días no es
+// una opción, y adelantar el reloj del sistema tampoco.
+import { vencerCotizacionesCaducadas } from '../src/services/solicitudes.service.js';
 
 const app = crearApp();
 const servidor = app.listen(0);
@@ -125,12 +128,14 @@ async function main() {
       : `  · ${enOtra.sku}: ${enOtra.existencia} aquí, y además en ${otras}`);
   }
 
-  console.log('\n== Alta de solicitud ==');
+  console.log('\n== Alta: todo nace como Cotización ==');
 
-  // Se pide un artículo real. A propósito NO se manda existencia_real_almacen:
-  // así se comprueba que el backend la selle consultando al ERP por su cuenta.
-  const articuloPedido = sinStock ?? articulos[0];
-  const segundo = articulos.find((a) => a.sku !== articuloPedido.sku) ?? articuloPedido;
+  // Se piden artículos reales. A propósito NO se manda existencia_real_almacen
+  // en la primera partida: así se comprueba que el backend la selle
+  // consultando al ERP por su cuenta.
+  const articuloPedido = conStock;
+  const segundo = articulos.find((a) => a.sku !== articuloPedido.sku
+    && Number(a.existencia) > 0) ?? articuloPedido;
 
   const creada = await api('/solicitudes', {
     metodo: 'POST',
@@ -141,7 +146,7 @@ async function main() {
       observaciones: 'Prueba automatizada de humo.',
       items: [
         { sku_producto: articuloPedido.sku, descripcion: articuloPedido.descripcion,
-          cantidad_solicitada: 3, precio_estimado: articuloPedido.precio_lista ?? null },
+          cantidad_solicitada: 1, precio_estimado: articuloPedido.precio_lista ?? null },
         { sku_producto: segundo.sku, descripcion: segundo.descripcion,
           cantidad_solicitada: 1, precio_estimado: segundo.precio_lista ?? null,
           existencia_real_almacen: segundo.existencia },
@@ -151,8 +156,13 @@ async function main() {
   check('POST /solicitudes -> 201', creada.status === 201);
   const sol = creada.data?.solicitud;
   check('Se generó folio', /^SC-\d{4}-\d{6}$/.test(sol?.folio || ''), sol?.folio);
-  check('Nace en Pendiente', sol?.estatus_actual === 'Pendiente');
+  check('Nace como Cotización', sol?.tipo === 'Cotizacion', `(${sol?.tipo})`);
+  // Todo lo pedido hay en existencia, así que no tiene que pasar por Compras.
+  check('Sin faltantes nace en Borrador', sol?.estatus_actual === 'Borrador',
+    `(${sol?.estatus_actual})`);
   check('Guardó 2 partidas', sol?.detalle?.length === 2);
+  check('Guardó el precio cotizado junto al estimado',
+    sol?.detalle?.every((d) => d.precio_cotizado !== null));
 
   // La primera partida NO traía existencia: la selló el backend desde el ERP.
   check('Selló la existencia que reporta el ERP',
@@ -162,36 +172,148 @@ async function main() {
   const sinItems = await api('/solicitudes', { metodo: 'POST', token: tokenVendedor, body: { items: [] } });
   check('Solicitud sin partidas -> 400', sinItems.status === 400);
 
+  // Una cotización con un faltante SÍ tiene que pasar por Compras antes de
+  // poderse mandar: alguien tiene que conseguir precio y tiempo de entrega.
+  const conFaltante = await api('/solicitudes', {
+    metodo: 'POST', token: tokenVendedor,
+    body: {
+      id_cliente: 1,
+      items: [{
+        sku_producto: articuloPedido.sku,
+        descripcion: articuloPedido.descripcion,
+        // Más piezas de las que hay: eso es un faltante.
+        cantidad_solicitada: Number(articuloPedido.existencia) + 500,
+        precio_estimado: articuloPedido.precio_lista ?? null,
+      }],
+    },
+  });
+  check('Con faltantes se va a Compras',
+    conFaltante.data?.solicitud?.estatus_actual === 'Con Compras',
+    `(${conFaltante.data?.solicitud?.estatus_actual})`);
+
   console.log('\n== Consulta y filtros ==');
   const mias = await api('/solicitudes', { token: tokenVendedor });
   check('Vendedor lista solo sus solicitudes',
     mias.data?.solicitudes?.every((s) => s.vendedor_nombre === 'Ana Ríos'));
 
-  const urgentes = await api('/solicitudes?prioridad=Urgente&estatus=Pendiente', { token: tokenComprador });
-  check('Filtro prioridad+estatus funciona',
-    urgentes.data?.solicitudes?.every((s) => s.prioridad === 'Urgente' && s.estatus_actual === 'Pendiente'));
+  const soloCotizaciones = await api('/solicitudes?tipo=Cotizacion', { token: tokenComprador });
+  check('Filtro por tipo=Cotizacion',
+    soloCotizaciones.data?.solicitudes?.length > 0
+    && soloCotizaciones.data.solicitudes.every((s) => s.tipo === 'Cotizacion'));
+
+  const soloPedidos = await api('/solicitudes?tipo=Pedido', { token: tokenComprador });
+  check('Filtro por tipo=Pedido',
+    soloPedidos.data?.solicitudes?.every((s) => s.tipo === 'Pedido'));
+
+  const tipoInvalido = await api('/solicitudes?tipo=Factura', { token: tokenComprador });
+  check('Tipo inventado -> 400', tipoInvalido.status === 400);
 
   const detalle = await api(`/solicitudes/${sol.id}`, { token: tokenComprador });
   check('Detalle trae historial inicial', detalle.data?.solicitud?.historial?.length === 1);
-  check('Detalle sugiere siguientes estatus',
-    Array.isArray(detalle.data?.estatus_disponibles) && detalle.data.estatus_disponibles.length > 0);
+  check('Detalle dice que ya se puede enviar', detalle.data?.acciones?.puede_enviar === true);
+  check('Detalle dice que todavía NO se puede convertir',
+    detalle.data?.acciones?.puede_convertir === false);
 
-  console.log('\n== Cambio de estatus ==');
-  const porVendedor = await api(`/solicitudes/${sol.id}/estatus`, {
-    metodo: 'PATCH', token: tokenVendedor, body: { estatus: 'En Cotizacion' },
+  console.log('\n== Enviar al cliente: congela precio y arranca el reloj ==');
+
+  const antesDeEnviar = await api(`/solicitudes/${sol.id}/convertir`, {
+    metodo: 'POST', token: tokenVendedor,
   });
-  check('Vendedor NO puede mover estatus -> 403', porVendedor.status === 403);
+  check('No se puede convertir lo que el cliente no ha visto -> 409',
+    antesDeEnviar.status === 409, `(${antesDeEnviar.status})`);
+
+  // confirmar:true porque entre el alta y este momento el precio de Quiter
+  // pudo moverse, y el servidor —bien— se niega a mandar un precio viejo sin
+  // que alguien lo vea. Ese candado se prueba aparte, más abajo.
+  const enviada = await api(`/solicitudes/${sol.id}/enviar`, {
+    metodo: 'POST', token: tokenVendedor, body: { dias_vigencia: 30, confirmar: true },
+  });
+  check('POST /enviar -> 200', enviada.status === 200,
+    enviada.status === 200 ? '' : `(${enviada.status} ${enviada.data?.error ?? ''})`);
+  check('Queda Enviada', enviada.data?.cotizacion?.estatus_actual === 'Enviada');
+  check('Selló la fecha de envío', Boolean(enviada.data?.cotizacion?.enviada_en));
+  check('Selló la fecha de vencimiento', Boolean(enviada.data?.cotizacion?.vence_en));
+
+  const vence = new Date(enviada.data.cotizacion.vence_en);
+  const enviadoEn = new Date(enviada.data.cotizacion.enviada_en);
+  const diasReales = Math.round((vence - enviadoEn) / 86400000);
+  check('Vence exactamente 30 días después de enviarse', diasReales === 30, `(${diasReales} días)`);
+
+  const dosVeces = await api(`/solicitudes/${sol.id}/enviar`, {
+    metodo: 'POST', token: tokenVendedor, body: { confirmar: true },
+  });
+  check('No se puede enviar dos veces -> 409', dosVeces.status === 409);
+
+  const conDetalle = await api(`/solicitudes/${sol.id}`, { token: tokenVendedor });
+  check('Ahora sí se puede convertir', conDetalle.data?.acciones?.puede_convertir === true);
+  check('Y ya no se puede volver a enviar', conDetalle.data?.acciones?.puede_enviar === false);
+
+  console.log('\n== Convertir en Pedido: el folio NO cambia ==');
+
+  const folioAntes = sol.folio;
+  // Lo cierra el Comprador, no el vendedor: se acordó que Compras también
+  // puede, porque a veces el cliente les habla directo.
+  const pedido = await api(`/solicitudes/${sol.id}/convertir`, {
+    metodo: 'POST', token: tokenComprador,
+    body: { comentario: 'Cliente confirmó por teléfono.' },
+  });
+  check('POST /convertir -> 200', pedido.status === 200,
+    pedido.status === 200 ? '' : `(${pedido.status} ${pedido.data?.error ?? ''})`);
+  check('Ahora es Pedido', pedido.data?.pedido?.tipo === 'Pedido');
+  check('EL FOLIO ES EL MISMO', pedido.data?.pedido?.folio === folioAntes,
+    `(${folioAntes} -> ${pedido.data?.pedido?.folio})`);
+  check('Es el mismo documento, no una copia', pedido.data?.pedido?.id === sol.id);
+  check('Entra a la mesa de Compras como Pendiente',
+    pedido.data?.pedido?.estatus_actual === 'Pendiente');
+  check('Guardó cuándo lo aprobó el cliente', Boolean(pedido.data?.pedido?.convertida_en));
+
+  const yaConvertida = await api(`/solicitudes/${sol.id}/convertir`, {
+    metodo: 'POST', token: tokenComprador,
+  });
+  check('No se puede convertir dos veces -> 409', yaConvertida.status === 409);
+
+  console.log('\n== El precio prometido sobrevive a la conversión ==');
+
+  const trasConvertir = await api(`/solicitudes/${sol.id}`, { token: tokenComprador });
+  const partidasPedido = trasConvertir.data?.solicitud?.detalle ?? [];
+  check('Las partidas conservan su precio cotizado',
+    partidasPedido.length === 2 && partidasPedido.every((d) => d.precio_cotizado !== null));
+
+  const refresco = await api(`/solicitudes/${sol.id}/precios`, {
+    metodo: 'POST', token: tokenComprador,
+  });
+  check('POST /precios -> 200', refresco.status === 200);
+  check('Reconoce que el precio ya está comprometido', refresco.data?.congelado === true);
+
+  const trasRefresco = await api(`/solicitudes/${sol.id}`, { token: tokenComprador });
+  const preciosIguales = (trasRefresco.data?.solicitud?.detalle ?? []).every((d, i) =>
+    String(d.precio_cotizado) === String(partidasPedido[i].precio_cotizado));
+  check('Refrescar NO tocó el precio que se le prometió al cliente', preciosIguales);
+
+  console.log('\n== Cambio de estatus del Pedido ==');
+  const porVendedor = await api(`/solicitudes/${sol.id}/estatus`, {
+    metodo: 'PATCH', token: tokenVendedor, body: { estatus: 'Con Proveedor' },
+  });
+  check('Vendedor NO mueve el flujo de un Pedido -> 403', porVendedor.status === 403,
+    `(${porVendedor.status})`);
 
   const salto = await api(`/solicitudes/${sol.id}/estatus`, {
     metodo: 'PATCH', token: tokenComprador, body: { estatus: 'Recibido' },
   });
   check('Transición inválida (Pendiente -> Recibido) -> 409', salto.status === 409);
 
+  const mezcla = await api(`/solicitudes/${sol.id}/estatus`, {
+    metodo: 'PATCH', token: tokenComprador, body: { estatus: 'Enviada' },
+  });
+  check('Un Pedido no puede tomar un estatus de Cotización -> 409', mezcla.status === 409,
+    `(${mezcla.status})`);
+
   const cot = await api(`/solicitudes/${sol.id}/estatus`, {
     metodo: 'PATCH', token: tokenComprador,
-    body: { estatus: 'En Cotizacion', comentario: 'Pidiendo precio a 3 proveedores.' },
+    body: { estatus: 'Con Proveedor', comentario: 'Pidiendo precio a 3 proveedores.' },
   });
-  check('Pendiente -> En Cotizacion OK', cot.status === 200 && cot.data?.solicitud?.estatus_actual === 'En Cotizacion');
+  check('Pendiente -> Con Proveedor OK',
+    cot.status === 200 && cot.data?.solicitud?.estatus_actual === 'Con Proveedor');
 
   const sinFecha = await api(`/solicitudes/${sol.id}/estatus`, {
     metodo: 'PATCH', token: tokenComprador, body: { estatus: 'En Transito' },
@@ -202,7 +324,7 @@ async function main() {
     metodo: 'PATCH', token: tokenComprador,
     body: { estatus: 'En Transito', comentario: 'OC-4410 colocada.', fecha_promesa_entrega: '2026-09-15' },
   });
-  check('En Cotizacion -> En Transito OK', transito.data?.solicitud?.estatus_actual === 'En Transito');
+  check('Con Proveedor -> En Transito OK', transito.data?.solicitud?.estatus_actual === 'En Transito');
   check('Guardó fecha promesa', Boolean(transito.data?.solicitud?.fecha_promesa_entrega));
   check('Asignó comprador', transito.data?.solicitud?.id_comprador_asignado === 3);
 
@@ -214,8 +336,105 @@ async function main() {
   check('Selló fecha de cierre', Boolean(recibido.data?.solicitud?.fecha_cierre));
 
   const final = await api(`/solicitudes/${sol.id}`, { token: tokenComprador });
-  check('Historial acumuló 4 movimientos', final.data?.solicitud?.historial?.length === 4,
-    `(${final.data?.solicitud?.historial?.length})`);
+  check('Un solo hilo de bitácora, de cotización a recibido',
+    final.data?.solicitud?.historial?.length === 6,
+    `(${final.data?.solicitud?.historial?.length} movimientos)`);
+
+  console.log('\n== El candado del precio viejo ==');
+
+  // Se arma una cotización y se le ensucia el precio a mano, como si Quiter lo
+  // hubiera movido entre que el vendedor la capturó y el momento de mandarla.
+  // El sistema NO debe dejar que se vaya al cliente sin que alguien lo vea.
+  const conPrecioViejo = await api('/solicitudes', {
+    metodo: 'POST', token: tokenVendedor,
+    body: {
+      id_cliente: 1,
+      items: [{ sku_producto: articuloPedido.sku, descripcion: articuloPedido.descripcion,
+        cantidad_solicitada: 1, precio_estimado: articuloPedido.precio_lista ?? null,
+        existencia_real_almacen: articuloPedido.existencia }],
+    },
+  });
+  const idViejo = conPrecioViejo.data?.solicitud?.id;
+
+  await query(
+    `UPDATE solicitudes_detalle
+        SET precio_cotizado = 1, precio_estimado = 1, precio_lista_actual = 1
+      WHERE id_solicitud = @id`,
+    { id: idViejo },
+  );
+
+  const frenada = await api(`/solicitudes/${idViejo}/enviar`, {
+    metodo: 'POST', token: tokenVendedor,
+  });
+  check('Si el precio cambió, no la manda -> 409', frenada.status === 409,
+    `(${frenada.status})`);
+  check('Y dice exactamente qué partida cambió',
+    Array.isArray(frenada.data?.detalles) && frenada.data.detalles.length > 0
+      && frenada.data.detalles[0].sku_producto === articuloPedido.sku,
+    frenada.data?.detalles?.[0]
+      ? `(${frenada.data.detalles[0].precio_cotizado} -> ${frenada.data.detalles[0].precio_actual})`
+      : '');
+
+  const confirmada = await api(`/solicitudes/${idViejo}/enviar`, {
+    metodo: 'POST', token: tokenVendedor, body: { confirmar: true },
+  });
+  check('Confirmando sí la manda', confirmada.status === 200);
+
+  const yaEnviada = await api(`/solicitudes/${idViejo}`, { token: tokenVendedor });
+  const partidaFinal = yaEnviada.data?.solicitud?.detalle?.[0];
+  check('Congeló el precio NUEVO, no el viejo de un peso',
+    Number(partidaFinal?.precio_cotizado) > 1,
+    `(quedó en ${partidaFinal?.precio_cotizado})`);
+
+  console.log('\n== Vencimiento automático al mes ==');
+
+  // Se crea una cotización, se envía, y se le empuja la fecha de vencimiento
+  // al pasado: es la única forma de comprobar hoy lo que tarda 30 días.
+  const paraVencer = await api('/solicitudes', {
+    metodo: 'POST', token: tokenVendedor,
+    body: {
+      id_cliente: 1,
+      items: [{ sku_producto: articuloPedido.sku, descripcion: articuloPedido.descripcion,
+        cantidad_solicitada: 1, precio_estimado: articuloPedido.precio_lista ?? null,
+        existencia_real_almacen: articuloPedido.existencia }],
+    },
+  });
+  const idVencer = paraVencer.data?.solicitud?.id;
+  const folioVencer = paraVencer.data?.solicitud?.folio;
+
+  await api(`/solicitudes/${idVencer}/enviar`, {
+    metodo: 'POST', token: tokenVendedor, body: { confirmar: true },
+  });
+
+  await query(
+    "UPDATE solicitudes_compras SET vence_en = NOW() - INTERVAL '1 day' WHERE id = @id",
+    { id: idVencer },
+  );
+
+  const vencidas = await vencerCotizacionesCaducadas();
+  check('El vigía la venció', vencidas.some((v) => v.id === idVencer),
+    `(${folioVencer})`);
+
+  const yaVencida = await api(`/solicitudes/${idVencer}`, { token: tokenVendedor });
+  check('Quedó en Vencida', yaVencida.data?.solicitud?.estatus_actual === 'Vencida');
+  check('Y ya no se puede convertir', yaVencida.data?.acciones?.puede_convertir === false);
+  check('La bitácora explica por qué venció',
+    yaVencida.data?.solicitud?.historial?.some((h) => /sin respuesta del cliente/i.test(h.comentario || '')));
+
+  // Correr el vigía otra vez no debe volver a vencerla ni duplicar la bitácora.
+  const segundaVuelta = await vencerCotizacionesCaducadas();
+  check('Correr el vigía dos veces no la vence dos veces',
+    !segundaVuelta.some((v) => v.id === idVencer));
+
+  const bitacoraFinal = await api(`/solicitudes/${idVencer}`, { token: tokenVendedor });
+  check('La bitácora no se duplicó',
+    bitacoraFinal.data?.solicitud?.historial?.length
+      === yaVencida.data?.solicitud?.historial?.length);
+
+  const convertirVencida = await api(`/solicitudes/${idVencer}/convertir`, {
+    metodo: 'POST', token: tokenVendedor,
+  });
+  check('Una cotización vencida ya no se convierte -> 409', convertirVencida.status === 409);
 
   console.log('\n== Dashboard gerencial ==');
   const negado = await api('/dashboard/gerencia', { token: tokenVendedor });

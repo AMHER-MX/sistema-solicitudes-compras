@@ -37,7 +37,7 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
     setError('');
     setEnviando(true);
     try {
-      const { solicitud } = await solicitudesApi.crear({
+      const { solicitud, aviso } = await solicitudesApi.crear({
         id_cliente: idCliente ? Number(idCliente) : null,
         prioridad,
         observaciones: observaciones.trim() || null,
@@ -54,9 +54,11 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
       setObservaciones('');
       setPrioridad('Normal');
       setIdCliente('');
-      onCreada?.(solicitud);
+      // El aviso lo redacta el servidor: dice si ya se puede mandar al
+      // cliente o si pasó a Compras por faltantes.
+      onCreada?.(solicitud, aviso);
     } catch (err) {
-      setError(err.mensaje || 'No se pudo crear la solicitud');
+      setError(err.mensaje || 'No se pudo crear la cotización');
     } finally {
       setEnviando(false);
     }

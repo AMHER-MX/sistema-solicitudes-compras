@@ -20,10 +20,13 @@ const CERRADOS = ESTATUS_FINALES.map((e) => `'${e}'`).join(', ');
  * Devuelve el fragmento y los parámetros; nunca concatena valores.
  */
 function armarFiltros(filtros = {}) {
-  const { id_vendedor, sucursal, prioridad, estatus, desde, hasta, busqueda, dias } = filtros;
+  const { tipo, id_vendedor, sucursal, prioridad, estatus, desde, hasta, busqueda, dias } = filtros;
   const where = [];
   const params = {};
 
+  // Sin tipo el reporte trae los dos, que es lo que quiere Gerencia cuando
+  // pregunta "¿cuánto se cotizó y cuánto se cerró?".
+  if (tipo)        { params.tipo = tipo;                    where.push('s.tipo = @tipo'); }
   if (id_vendedor) { params.vendedor = Number(id_vendedor); where.push('s.id_vendedor = @vendedor'); }
   if (sucursal)    { params.sucursal = Number(sucursal);    where.push('s.id_sucursal = @sucursal'); }
   if (prioridad)   { params.prioridad = prioridad;          where.push('s.prioridad = @prioridad'); }
@@ -68,6 +71,7 @@ export async function solicitudesConDetalle(filtros) {
 
   return query(`
     SELECT s.folio,
+           s.tipo,
            s.fecha_creacion,
            s.estatus_actual,
            s.prioridad,
@@ -79,10 +83,22 @@ export async function solicitudesConDetalle(filtros) {
            d.descripcion,
            d.cantidad_solicitada,
            d.existencia_real_almacen,
-           d.precio_estimado,
-           d.cantidad_solicitada * COALESCE(d.precio_estimado, 0) AS importe_estimado,
+           -- Los dos precios, uno al lado del otro. Es la columna que permite
+           -- contestar en Excel "¿qué cotizamos por debajo de lo que hoy vale?"
+           -- sin tener que cruzar nada con Quiter a mano.
+           COALESCE(d.precio_cotizado, d.precio_estimado) AS precio_cotizado,
+           d.precio_lista_actual,
+           CASE WHEN d.precio_cotizado IS NULL OR d.precio_cotizado = 0
+                  OR d.precio_lista_actual IS NULL THEN NULL
+                ELSE ROUND(((d.precio_lista_actual - d.precio_cotizado)
+                            / d.precio_cotizado * 100)::NUMERIC, 1)
+           END AS variacion_precio_pct,
+           d.cantidad_solicitada * COALESCE(d.precio_cotizado, d.precio_estimado, 0) AS importe_estimado,
            d.cantidad_surtida,
            comp.nombre AS comprador,
+           s.enviada_en,
+           s.vence_en,
+           s.convertida_en,
            TO_CHAR(s.fecha_promesa_entrega, 'YYYY-MM-DD') AS fecha_promesa_entrega,
            s.fecha_cierre,
            ROUND((EXTRACT(EPOCH FROM (COALESCE(s.fecha_cierre, NOW()) - s.fecha_creacion))
@@ -191,7 +207,7 @@ export async function indicadoresGerencia(filtros) {
                                           AND s.estatus_actual NOT IN (${CERRADOS})) AS urgentes_abiertas,
            COUNT(DISTINCT s.id) FILTER (WHERE s.fecha_promesa_entrega < CURRENT_DATE
                                           AND s.estatus_actual NOT IN (${CERRADOS})) AS vencidas,
-           COALESCE(SUM(d.cantidad_solicitada * COALESCE(d.precio_estimado, 0)), 0)  AS monto_estimado,
+           COALESCE(SUM(d.cantidad_solicitada * COALESCE(d.precio_cotizado, d.precio_estimado, 0)), 0)  AS monto_estimado,
            COALESCE(SUM(d.cantidad_solicitada), 0)                          AS piezas
     FROM      solicitudes_compras s
     LEFT JOIN solicitudes_detalle d ON d.id_solicitud = s.id
@@ -212,7 +228,7 @@ export async function indicadoresGerencia(filtros) {
     SELECT su.clave, su.nombre AS sucursal,
            COUNT(DISTINCT s.id) AS solicitudes,
            COUNT(DISTINCT s.id) FILTER (WHERE s.estatus_actual NOT IN (${CERRADOS})) AS abiertas,
-           COALESCE(SUM(d.cantidad_solicitada * COALESCE(d.precio_estimado, 0)), 0)  AS monto_estimado
+           COALESCE(SUM(d.cantidad_solicitada * COALESCE(d.precio_cotizado, d.precio_estimado, 0)), 0)  AS monto_estimado
     FROM      solicitudes_compras s
     JOIN      sucursales su ON su.id = s.id_sucursal
     LEFT JOIN solicitudes_detalle d ON d.id_solicitud = s.id
@@ -226,7 +242,7 @@ export async function indicadoresGerencia(filtros) {
     SELECT u.nombre AS vendedor,
            COUNT(DISTINCT s.id) AS solicitudes,
            COUNT(DISTINCT s.id) FILTER (WHERE s.estatus_actual NOT IN (${CERRADOS})) AS abiertas,
-           COALESCE(SUM(d.cantidad_solicitada * COALESCE(d.precio_estimado, 0)), 0)  AS monto_estimado
+           COALESCE(SUM(d.cantidad_solicitada * COALESCE(d.precio_cotizado, d.precio_estimado, 0)), 0)  AS monto_estimado
     FROM      solicitudes_compras s
     JOIN      usuarios u ON u.id = s.id_vendedor
     LEFT JOIN solicitudes_detalle d ON d.id_solicitud = s.id

@@ -107,6 +107,25 @@ export const solicitudesApi = {
   crear:   (payload) => api.post('/solicitudes', payload).then((r) => r.data),
   cambiarEstatus: (id, payload) =>
     api.patch(`/solicitudes/${id}/estatus`, payload).then((r) => r.data),
+
+  /**
+   * Manda la cotización al cliente: congela el precio y arranca el plazo.
+   *
+   * Si el precio de Quiter cambió desde que se armó, el servidor responde 409
+   * con la lista de partidas afectadas en `detalles`. Eso NO es un fallo: es
+   * el sistema pidiendo que alguien lo vea antes de comprometer un precio. La
+   * pantalla lo muestra y vuelve a llamar con `confirmar: true` si el vendedor
+   * decide mandarla de todos modos.
+   */
+  enviar: (id, payload = {}) =>
+    api.post(`/solicitudes/${id}/enviar`, payload).then((r) => r.data),
+
+  /** El cliente aprobó: la cotización se vuelve pedido, con el mismo folio. */
+  convertir: (id, payload = {}) =>
+    api.post(`/solicitudes/${id}/convertir`, payload).then((r) => r.data),
+
+  /** Vuelve a preguntarle el precio a Quiter. */
+  refrescarPrecios: (id) => api.post(`/solicitudes/${id}/precios`).then((r) => r.data),
 };
 
 /**

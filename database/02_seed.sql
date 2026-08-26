@@ -91,9 +91,9 @@ BEGIN
 
     -- 1) Urgente, recién capturada
     INSERT INTO solicitudes_compras
-        (id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual, observaciones)
+        (tipo, id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual, observaciones)
     VALUES
-        (v_vendedor1, v_torreon, v_cliente1, 'Urgente', 'Pendiente',
+        ('Pedido', v_vendedor1, v_torreon, v_cliente1, 'Urgente', 'Pendiente',
          'Cliente detiene unidad hasta recibir refacción.')
     RETURNING id INTO v_id;
 
@@ -110,10 +110,10 @@ BEGIN
 
     -- 2) Normal, ya en tránsito con promesa de entrega
     INSERT INTO solicitudes_compras
-        (id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual,
+        (tipo, id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual,
          fecha_promesa_entrega, id_comprador_asignado, observaciones)
     VALUES
-        (v_vendedor2, v_gomez, v_cliente2, 'Normal', 'En Transito',
+        ('Pedido', v_vendedor2, v_gomez, v_cliente2, 'Normal', 'En Transito',
          (NOW() + INTERVAL '5 days')::DATE, v_comprador,
          'Pedido consolidado con proveedor nacional.')
     RETURNING id INTO v_id;
@@ -127,15 +127,15 @@ BEGIN
         (id_solicitud, id_usuario, estatus_anterior, estatus_nuevo, comentario)
     VALUES
         (v_id, v_vendedor2, NULL,             'Pendiente',     'Solicitud creada por el vendedor.'),
-        (v_id, v_comprador, 'Pendiente',      'En Cotizacion', 'Solicitando precio a 3 proveedores.'),
-        (v_id, v_comprador, 'En Cotizacion',  'En Transito',   'Orden de compra OC-3391 colocada.');
+        (v_id, v_comprador, 'Pendiente',      'Con Proveedor', 'Solicitando precio a 3 proveedores.'),
+        (v_id, v_comprador, 'Con Proveedor',  'En Transito',   'Orden de compra OC-3391 colocada.');
 
     -- 3) Baja, ya recibida (alimenta el KPI de tiempo promedio de atención)
     INSERT INTO solicitudes_compras
-        (id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual,
+        (tipo, id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual,
          fecha_creacion, fecha_promesa_entrega, fecha_cierre, id_comprador_asignado)
     VALUES
-        (v_vendedor1, v_torreon, v_cliente3, 'Baja', 'Recibido',
+        ('Pedido', v_vendedor1, v_torreon, v_cliente3, 'Baja', 'Recibido',
          NOW() - INTERVAL '9 days',
          (NOW() - INTERVAL '2 days')::DATE,
          NOW() - INTERVAL '2 days',
@@ -155,4 +155,63 @@ BEGIN
         (v_id, v_comprador, 'Pendiente',    'Autorizada',  'Autorizada por gerencia.',          NOW() - INTERVAL '8 days'),
         (v_id, v_comprador, 'Autorizada',   'En Transito', 'Embarque en ruta.',                 NOW() - INTERVAL '5 days'),
         (v_id, v_comprador, 'En Transito',  'Recibido',    'Material recibido en almacén.',     NOW() - INTERVAL '2 days');
+
+    -- ─────────────────────────────────────────────────────────────────────────
+    -- COTIZACIONES: lo que todavía no aprueba el cliente
+    -- ─────────────────────────────────────────────────────────────────────────
+
+    -- 4) Enviada al cliente hace 3 días, con 27 por delante.
+    --    Una de sus partidas ya subió de precio en Quiter: sirve para ver el
+    --    aviso amarillo sin tener que esperar a que la vida lo produzca.
+    INSERT INTO solicitudes_compras
+        (tipo, id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual,
+         fecha_creacion, enviada_en, vence_en, dias_vigencia, observaciones)
+    VALUES
+        ('Cotizacion', v_vendedor1, v_torreon, v_cliente2, 'Normal', 'Enviada',
+         NOW() - INTERVAL '4 days',
+         NOW() - INTERVAL '3 days',
+         NOW() + INTERVAL '27 days',
+         30,
+         'Cliente pidió cotización por escrito para su comité.')
+    RETURNING id INTO v_id;
+
+    INSERT INTO solicitudes_detalle
+        (id_solicitud, sku_producto, descripcion, cantidad_solicitada, existencia_real_almacen,
+         precio_estimado, precio_cotizado, precio_lista_actual, precio_actualizado_en)
+    VALUES
+        -- Esta subió 6.5% desde que se cotizó: el sistema debe advertirlo y
+        -- NO cambiar lo que se le prometió al cliente.
+        (v_id, 'BAL-8890', 'Balata delantera cerámica 8890', 4, 6,
+         1250.00, 1250.00, 1331.00, NOW()),
+        (v_id, 'ACE-15W40', 'Aceite motor 15W40 cubeta 19L', 2, 8,
+         2480.00, 2480.00, 2480.00, NOW());
+
+    INSERT INTO solicitud_historial
+        (id_solicitud, id_usuario, estatus_anterior, estatus_nuevo, comentario, fecha_movimiento)
+    VALUES
+        (v_id, v_vendedor1, NULL,       'Borrador', 'Cotización creada. Todo en existencia: lista para enviar al cliente.', NOW() - INTERVAL '4 days'),
+        (v_id, v_vendedor1, 'Borrador', 'Enviada',  'Cotización enviada al cliente. Precios congelados, vigencia de 30 días.', NOW() - INTERVAL '3 days');
+
+    -- 5) Con faltantes: esperando a que Compras consiga precio y tiempo.
+    INSERT INTO solicitudes_compras
+        (tipo, id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual,
+         fecha_creacion, observaciones)
+    VALUES
+        ('Cotizacion', v_vendedor2, v_gomez, v_cliente3, 'Urgente', 'Con Compras',
+         NOW() - INTERVAL '1 day',
+         'No hay en piso. El cliente necesita saber en cuánto tiempo llega.')
+    RETURNING id INTO v_id;
+
+    INSERT INTO solicitudes_detalle
+        (id_solicitud, sku_producto, descripcion, cantidad_solicitada, existencia_real_almacen,
+         precio_estimado, precio_cotizado)
+    VALUES
+        (v_id, 'FLT-4520', 'Filtro de aceite motor diésel 4520', 12, 0, 385.00, 385.00);
+
+    INSERT INTO solicitud_historial
+        (id_solicitud, id_usuario, estatus_anterior, estatus_nuevo, comentario, fecha_movimiento)
+    VALUES
+        (v_id, v_vendedor2, NULL, 'Con Compras',
+         'Cotización creada. Hay faltantes: pasa a Compras para precio y tiempo de entrega.',
+         NOW() - INTERVAL '1 day');
 END $$;

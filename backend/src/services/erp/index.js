@@ -49,6 +49,21 @@ export function origenActivo() {
   return 'MOCK';
 }
 
+/**
+ * ¿Se puede escribir en la base un precio que vino de este origen?
+ *
+ * La distinción importa y es fácil de equivocar:
+ *
+ *   QUITER_API      Sí. Es el precio real.
+ *   MOCK            Sí. La instalación NO tiene ERP configurado (capacitación,
+ *                   pruebas), así que el catálogo simulado es la única verdad
+ *                   que hay y ser coherente con él es lo correcto.
+ *   MOCK_FALLBACK   NO. Aquí sí hay un ERP de verdad, pero no contestó. Pisar
+ *                   un precio real con uno inventado sería el peor error
+ *                   posible: quedaría guardado y nadie sabría que es falso.
+ */
+export const precioConfiable = (origen) => origen === 'QUITER_API' || origen === 'MOCK';
+
 /** Respuesta de respaldo cuando el ERP no está disponible o no está configurado. */
 function respuestaMock(termino, almacen, aviso, origen) {
   return { origen, almacen, articulos: buscarMock(termino, almacen), aviso };

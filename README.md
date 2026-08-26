@@ -1,7 +1,13 @@
 # SGC · Sistema de Gestión de Solicitudes de Compras y Pedidos
 
-Conecta las solicitudes de los vendedores con el equipo de compras, consultando
-existencias reales del ERP (**Quiter**) y dejando bitácora de cada movimiento.
+Conecta al piso de venta con el equipo de compras, consultando existencias y
+precios reales del ERP (**Quiter**) y dejando bitácora de cada movimiento.
+
+**Dos documentos, un solo folio.** Todo nace como **Cotización**: lo que el
+vendedor le manda al cliente. Si el cliente aprueba, esa misma cotización se
+vuelve **Pedido** — no se copia a ningún lado, es el mismo renglón que cambia
+de tipo, así que conserva su folio y su bitácora completa. Si el cliente no
+contesta en un mes, se cancela sola.
 
 **Stack:** Node.js + Express + **PostgreSQL** · React (Vite) + Tailwind CSS +
 lucide-react + Axios · Autenticación JWT con bcrypt y permisos por rol ·
@@ -200,15 +206,22 @@ clientes ────┘                        │
 | `sucursales` | Agencias. `clave` es la clave de ALMACÉN en Quiter. |
 | `clientes` | Cliente al que se le promete el material (`codigo_erp`). |
 | `usuarios` | Acceso al sistema. `rol` ∈ Vendedor / Comprador / Gerente. `debe_cambiar_password` marca las contraseñas temporales. |
-| `solicitudes_compras` | Encabezado: folio, prioridad, estatus, promesa de entrega. |
-| `solicitudes_detalle` | Partidas. Guarda la **existencia real al momento de solicitar**. |
+| `solicitudes_compras` | Encabezado: folio, **tipo** (Cotizacion/Pedido), prioridad, estatus, vigencia, promesa de entrega. |
+| `solicitudes_detalle` | Partidas. Guarda la **existencia real al momento de solicitar** y **dos precios**: el cotizado y el de hoy. |
 | `solicitud_historial` | Bitácora: quién movió qué, cuándo y con qué comentario. |
 
 Detalles que vale la pena conocer:
 
 - **Folio automático** `SC-2026-000001`, armado por una secuencia en el DEFAULT
   de la columna. No depende de la aplicación y no se puede repetir aunque dos
-  vendedores capturen al mismo tiempo.
+  vendedores capturen al mismo tiempo. **No cambia nunca**, ni siquiera cuando
+  la cotización se convierte en pedido: es el mismo documento.
+- **Dos columnas de precio, a propósito.** `precio_cotizado` es lo que se le
+  prometió al cliente y se congela al enviar la cotización; `precio_lista_actual`
+  es lo que Quiter dice hoy y lo refresca el vigía. Nunca se pisan: la única
+  forma de saber que un precio subió es tener los dos, y meterlos en una sola
+  columna haría que el papel del cliente y la pantalla dejaran de coincidir sin
+  que nadie se entere.
 - **Índices** para los filtros reales de la operación, incluido el compuesto
   `(estatus_actual, prioridad)` que usa la Mesa de Trabajo.
 - `CHECK` en `rol`, `prioridad` y `estatus_actual`: la base rechaza valores que
@@ -222,14 +235,53 @@ Detalles que vale la pena conocer:
 
 ### Flujo de estatus
 
+**Cotización** — lo que ve el cliente:
+
 ```
-Pendiente ──> En Cotizacion ──> Autorizada ──> En Transito ──> Recibido
+                        ┌─> Vencida      (pasó el mes sin respuesta)
+Borrador ──────────────>│
+   │                    ├─> Cancelada    (a mano)
+   └─> Con Compras ─────┘
+       (si hay faltantes)   └─> Enviada ──> [el cliente aprueba]
+                                                    │
+                                                    v
+```
+
+**Pedido** — lo que ya se está surtiendo:
+
+```
+Pendiente ──> Con Proveedor ──> Autorizada ──> En Transito ──> Recibido
     │               │                │              │
     └───────────────┴────────────────┴──────────────┴──> Cancelada / Rechazada
 ```
 
-Al llegar a un estatus final se sella `fecha_cierre`, que alimenta el KPI de
-tiempo promedio de atención.
+Tres cosas que conviene tener claras:
+
+- **`Con Compras` y `Con Proveedor` no son lo mismo.** La primera es una
+  cotización con faltantes esperando a que Compras consiga precio y tiempo; la
+  segunda es un pedido ya aprobado en el que Compras está negociando con el
+  proveedor. `Con Proveedor` se llamaba `En Cotizacion` hasta la migración 04:
+  se renombró porque tener dos cosas llamadas "cotización" en la misma pantalla
+  no lo entendía nadie.
+- **El reloj arranca al enviar, no al capturar.** Una cotización en borrador o
+  esperando a Compras no se vence: el cliente todavía no la ha visto.
+- Al llegar a un estatus final se sella `fecha_cierre`, que alimenta el KPI de
+  tiempo promedio de atención.
+
+### El vigía
+
+`backend/src/services/vigia.js` corre dentro del propio servidor, cada hora,
+y hace dos cosas que nadie tiene que acordarse de hacer:
+
+1. **Vence** las cotizaciones enviadas cuyo plazo se cumplió.
+2. **Refresca** el precio de Quiter en los documentos vivos. En una cotización
+   ya enviada eso NO toca lo que se le prometió al cliente: solo actualiza la
+   referencia para poder avisar *"esto subió 8% desde que lo cotizaste"*.
+
+Es seguro que corra dos veces: el `UPDATE` que vence selecciona y escribe en
+una sola instrucción, así que nada se vence dos veces ni duplica la bitácora.
+Si el ERP no contesta, **no** escribe precios de respaldo: pisar un precio real
+con uno inventado lo dejaría guardado como bueno y nadie se enteraría.
 
 ---
 
@@ -246,10 +298,13 @@ requieren el header `Authorization: Bearer <token>`.
 | `GET` | `/auth/yo` | todos | Perfil del token. |
 | `POST` | `/auth/cambiar-password` | todos | Cambio de contraseña propia. |
 | `GET` | `/productos/existencias?sku=XXX&almacen=101` | todos | **Consulta al ERP.** |
-| `POST` | `/solicitudes` | Vendedor, Gerente | Encabezado + partidas + historial, en **una transacción**. |
-| `GET` | `/solicitudes` | todos | Filtros: `id_vendedor`, `prioridad`, `estatus`, `sucursal`, `desde`, `hasta`, `busqueda`, `limite`, `pagina`. |
-| `GET` | `/solicitudes/:id` | todos | Encabezado + partidas + bitácora + siguientes estatus. |
-| `PATCH` | `/solicitudes/:id/estatus` | Comprador, Gerente | Cambia estatus, fija promesa y guarda comentario. |
+| `POST` | `/solicitudes` | Vendedor, Gerente | Crea la **cotización** (encabezado + partidas + historial) en **una transacción**. |
+| `GET` | `/solicitudes` | todos | Filtros: `tipo`, `id_vendedor`, `prioridad`, `estatus`, `sucursal`, `desde`, `hasta`, `busqueda`, `limite`, `pagina`. |
+| `GET` | `/solicitudes/:id` | todos | Encabezado + partidas + bitácora + siguientes estatus + qué puede hacer quien pregunta. |
+| `POST` | `/solicitudes/:id/enviar` | Vendedor, Gerente | **Congela el precio** y arranca el plazo de vigencia. |
+| `POST` | `/solicitudes/:id/convertir` | Vendedor, Comprador, Gerente | El cliente aprobó: pasa a Pedido **con el mismo folio**. |
+| `POST` | `/solicitudes/:id/precios` | todos | Vuelve a preguntarle el precio a Quiter. |
+| `PATCH` | `/solicitudes/:id/estatus` | Vendedor, Comprador, Gerente | Cambia estatus, fija promesa y guarda comentario. |
 | `GET` | `/dashboard/gerencia?dias=30&sucursal=1` | Comprador, Gerente | KPIs y concentrados. |
 | `GET` | `/reportes/solicitudes` · `/reportes/historial` | todos | Excel. Un Vendedor solo baja lo suyo. |
 | `GET` | `/reportes/faltantes` · `/reportes/indicadores` | Comprador, Gerente | Excel de gestión. |
@@ -260,7 +315,17 @@ Reglas de negocio que impone la API, no solo la interfaz:
 
 - Un **Vendedor** solo ve —y solo baja— sus propias solicitudes, aunque mande
   otro `id_vendedor` en la query.
-- Un **Vendedor** no puede mover estatus (**403**).
+- Un **Vendedor** manda en su cotización (la envía, la manda a Compras, la
+  cancela) pero **no** en el flujo de un pedido (**403**): quién consigue la
+  pieza y cuándo llega lo registra Compras.
+- **`/enviar` se niega si el precio cambió** desde que se armó la cotización:
+  responde **409** con la lista de partidas afectadas en `detalles`. No es un
+  fallo, es el sistema pidiendo que alguien lo vea antes de comprometer un
+  precio con el cliente. Se reintenta con `{ "confirmar": true }`.
+- Solo se convierte en pedido una cotización **Enviada** (**409** si no lo está),
+  y solo la puede convertir quien la levantó, un Comprador o Gerencia.
+- Un estatus de cotización en un pedido —o al revés— se rechaza con **409**, y
+  además lo impide un `CHECK` de la propia base.
 - Pasar a **En Transito** exige `fecha_promesa_entrega` (**400** si falta).
 - Solo se aceptan transiciones válidas del flujo (**409** en cualquier otro caso).
 - Mientras alguien traiga contraseña temporal, **toda** la API le responde
@@ -343,10 +408,14 @@ que estás viendo**: se llevan los mismos filtros que tengas puestos.
 
 | Reporte | Dónde está | Qué trae |
 |---|---|---|
-| **Solicitudes** | Mis solicitudes · Mesa de compras | Un renglón por pieza pedida: folio, fecha, vendedor, sucursal, cliente, número de parte, cantidad, existencia al pedir, precio e importe, promesa y días abierta. |
-| **Seguimiento** | Mis solicitudes · Mesa de compras | La bitácora de cada folio, con las **horas que tardó cada paso**. Es lo que dice dónde se atora el proceso. |
+| **Solicitudes** | Piso de venta · Mesa de compras | Un renglón por pieza: folio, **tipo**, fecha, vendedor, sucursal, cliente, número de parte, cantidad, existencia al pedir, **precio cotizado, precio de hoy y la variación en %**, importe, fechas de envío / vencimiento / aprobación, promesa y días abierta. |
+| **Seguimiento** | Piso de venta · Mesa de compras | La bitácora de cada folio, con las **horas que tardó cada paso**. Como el folio no cambia al convertirse en pedido, el archivo trae la vida entera del documento en un solo hilo. |
 | **Faltantes** | Dashboard | Concentrado de lo que se pidió con existencia en cero: piezas, veces, cuántas sucursales lo piden e importe. |
 | **Indicadores** | Dashboard | Los números del tablero: resumen, tiempos de atención, y desglose por estatus, sucursal y vendedor. |
+
+La columna **Var. %** es la que contesta la pregunta cara: *¿qué estamos por
+vender por debajo de lo que hoy nos cuesta?* Se filtra en Excel por valores
+mayores a cero y salen justo esas partidas.
 
 Cada archivo abre listo para trabajarse: encabezado congelado, filtros puestos,
 columnas a la medida, fechas como fechas y dinero como dinero. Los totales van
@@ -449,7 +518,12 @@ diferencia entre "protegido por una contraseña" y "ni siquiera visible".
 
 ## 11. Pendientes
 
-- [ ] Notificación al vendedor cuando su solicitud cambia de estatus.
+- [ ] Notificación al vendedor cuando su solicitud cambia de estatus, y aviso
+      unos días antes de que una cotización se venza (hoy solo lo advierte la
+      pantalla cuando entra a verla).
+- [ ] Imprimir / mandar por correo la cotización en PDF con el formato de la
+      empresa. Hoy el sistema la registra y la controla, pero el papel que ve
+      el cliente se sigue armando aparte.
 - [ ] Adjuntar cotizaciones del proveedor a la solicitud.
 - [ ] Asignar una solicitud a un comprador en particular (hoy cualquiera la toma).
 - [ ] Respaldo programado de la base de Railway.

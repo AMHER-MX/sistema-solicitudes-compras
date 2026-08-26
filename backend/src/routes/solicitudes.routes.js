@@ -18,10 +18,33 @@ router.post('/', permitirRoles(ROLES.VENDEDOR, ROLES.GERENTE), asyncHandler(ctrl
 router.get('/', asyncHandler(ctrl.listar));
 router.get('/:id', asyncHandler(ctrl.detalle));
 
-// Mover estatus: solo Compras y Gerencia.
+// Enviar la cotización al cliente: la manda quien la levantó (o Gerencia).
+// Es el momento en que se congela el precio y arranca el reloj de vigencia.
+router.post(
+  '/:id/enviar',
+  permitirRoles(ROLES.VENDEDOR, ROLES.GERENTE),
+  asyncHandler(ctrl.enviar),
+);
+
+// El cliente aprobó: la cotización se vuelve Pedido conservando su folio.
+// También lo puede hacer Compras, porque a veces el cliente les habla directo
+// o el vendedor anda fuera y el pedido no se puede quedar esperando.
+// El controlador verifica además que sea SU cotización si quien llama es Vendedor.
+router.post(
+  '/:id/convertir',
+  permitirRoles(ROLES.VENDEDOR, ROLES.COMPRADOR, ROLES.GERENTE),
+  asyncHandler(ctrl.convertir),
+);
+
+// Volver a preguntarle el precio a Quiter. Cualquier rol con acceso al
+// documento: si ya se envió al cliente, solo actualiza la referencia.
+router.post('/:id/precios', asyncHandler(ctrl.actualizarPrecios));
+
+// Mover estatus. El Vendedor entra aquí para mandar su cotización a Compras
+// o cancelarla; el controlador le impide tocar el flujo de un Pedido.
 router.patch(
   '/:id/estatus',
-  permitirRoles(ROLES.COMPRADOR, ROLES.GERENTE),
+  permitirRoles(ROLES.VENDEDOR, ROLES.COMPRADOR, ROLES.GERENTE),
   asyncHandler(ctrl.actualizarEstatus),
 );
 

@@ -9,7 +9,9 @@ import { LogoCatosa } from './LogoCatosa.jsx';
 /** Pestañas visibles según el rol del usuario. */
 export function pestanasPorRol(rol) {
   const todas = [
-    { id: 'vendedor',  etiqueta: 'Mis solicitudes', icono: Search,        roles: ['Vendedor', 'Gerente'] },
+    // "Piso de venta" y no "Mis cotizaciones": desde aquí también se consultan
+    // existencias y se ven los pedidos ya aprobados, no solo lo propio.
+    { id: 'vendedor',  etiqueta: 'Piso de venta',   icono: Search,        roles: ['Vendedor', 'Gerente'] },
     { id: 'compras',   etiqueta: 'Mesa de compras', icono: ClipboardList, roles: ['Comprador', 'Gerente'] },
     { id: 'dashboard', etiqueta: 'Dashboard',       icono: BarChart3,     roles: ['Gerente', 'Comprador'] },
     { id: 'usuarios',  etiqueta: 'Usuarios',        icono: Users,         roles: ['Gerente'] },

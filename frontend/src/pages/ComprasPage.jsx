@@ -14,20 +14,36 @@ import {
 } from '../components/ui/Primitivos.jsx';
 import { catalogosApi, solicitudesApi } from '../api/client.js';
 import BotonExcel from '../components/BotonExcel.jsx';
+import PestanasTipo from '../components/PestanasTipo.jsx';
 import {
-  ESTATUS, ESTATUS_FINALES, ESTILO_ESTATUS, ESTILO_PRIORIDAD, PRIORIDADES,
-  fecha, moneda, numero,
+  ESTATUS_COTIZACION, ESTATUS_PEDIDO, ESTATUS_FINALES, ESTILO_ESTATUS,
+  ESTILO_PRIORIDAD, EXPLICACION_ESTATUS, PRIORIDADES, TIPOS,
+  fecha, moneda, numero, vigencia,
 } from '../lib/constantes.js';
 
-/** Filtros rápidos: lo que compras necesita ver primero. */
-const VISTAS_RAPIDAS = [
-  { id: 'abiertas',  etiqueta: 'Bandeja abierta', estatus: 'Pendiente,En Cotizacion,Autorizada,En Transito' },
-  { id: 'pendiente', etiqueta: 'Por atender',     estatus: 'Pendiente' },
-  { id: 'transito',  etiqueta: 'En tránsito',     estatus: 'En Transito' },
-  { id: 'todas',     etiqueta: 'Todas',           estatus: '' },
-];
+/**
+ * Filtros rápidos, distintos según la pestaña.
+ *
+ * En Cotizaciones lo que le importa a Compras es una sola cosa: las que traen
+ * faltantes y están esperando que alguien consiga precio y tiempo de entrega.
+ * En Pedidos, la bandeja de siempre.
+ */
+const VISTAS_POR_TIPO = {
+  [TIPOS.COTIZACION]: [
+    { id: 'con-compras', etiqueta: 'Esperando a Compras', estatus: 'Con Compras' },
+    { id: 'enviadas',    etiqueta: 'Con el cliente',      estatus: 'Enviada' },
+    { id: 'todas',       etiqueta: 'Todas',               estatus: '' },
+  ],
+  [TIPOS.PEDIDO]: [
+    { id: 'abiertas',  etiqueta: 'Bandeja abierta', estatus: 'Pendiente,Con Proveedor,Autorizada,En Transito' },
+    { id: 'pendiente', etiqueta: 'Por atender',     estatus: 'Pendiente' },
+    { id: 'transito',  etiqueta: 'En tránsito',     estatus: 'En Transito' },
+    { id: 'todas',     etiqueta: 'Todas',           estatus: '' },
+  ],
+};
 
 export default function ComprasPage() {
+  const [tipo, setTipo] = useState(TIPOS.PEDIDO);
   const [vistaRapida, setVistaRapida] = useState('abiertas');
   const [prioridad, setPrioridad] = useState('');
   const [estatus, setEstatus] = useState('');
@@ -46,17 +62,20 @@ export default function ComprasPage() {
     catalogosApi.sucursales().then((d) => setSucursales(d.sucursales)).catch(() => {});
   }, []);
 
+  const vistas = VISTAS_POR_TIPO[tipo];
+
   const filtros = useMemo(() => {
     // El select de estatus específico manda sobre la vista rápida.
-    const porVista = VISTAS_RAPIDAS.find((v) => v.id === vistaRapida)?.estatus ?? '';
+    const porVista = vistas.find((v) => v.id === vistaRapida)?.estatus ?? '';
     return {
+      tipo,
       estatus: estatus || porVista || undefined,
       prioridad: prioridad || undefined,
       sucursal: sucursal || undefined,
       busqueda: busqueda.trim() || undefined,
       limite: 200,
     };
-  }, [vistaRapida, estatus, prioridad, sucursal, busqueda]);
+  }, [tipo, vistas, vistaRapida, estatus, prioridad, sucursal, busqueda]);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -100,8 +119,19 @@ export default function ComprasPage() {
 
         {/* ── Filtros: una sola fila arriba de la tabla ── */}
         <div className="space-y-3 border-b border-hairline px-5 py-4">
+          {/* Cambiar de pestaña reinicia la vista rápida: los filtros de
+              cotizaciones no significan nada en pedidos y viceversa. */}
+          <PestanasTipo
+            valor={tipo}
+            onCambiar={(t) => {
+              setTipo(t);
+              setVistaRapida(VISTAS_POR_TIPO[t][0].id);
+              setEstatus('');
+            }}
+          />
+
           <div className="flex flex-wrap gap-1.5">
-            {VISTAS_RAPIDAS.map((v) => (
+            {vistas.map((v) => (
               <button
                 key={v.id}
                 onClick={() => { setVistaRapida(v.id); setEstatus(''); }}
@@ -132,7 +162,10 @@ export default function ComprasPage() {
             </Select>
             <Select value={estatus} onChange={(e) => setEstatus(e.target.value)} aria-label="Filtrar por estatus">
               <option value="">Todo estatus</option>
-              {ESTATUS.map((e) => <option key={e} value={e}>{e}</option>)}
+              {(tipo === TIPOS.COTIZACION ? ESTATUS_COTIZACION : ESTATUS_PEDIDO)
+                .map((e) => (
+                  <option key={e} value={e} title={EXPLICACION_ESTATUS[e]}>{e}</option>
+                ))}
             </Select>
             <Select value={sucursal} onChange={(e) => setSucursal(e.target.value)} aria-label="Filtrar por sucursal">
               <option value="">Todas las sucursales</option>
@@ -165,7 +198,9 @@ export default function ComprasPage() {
                   <th className="px-4 py-2.5 text-right font-medium">Partidas</th>
                   <th className="px-4 py-2.5 text-right font-medium">Importe</th>
                   <th className="px-4 py-2.5 text-left font-medium">Estatus</th>
-                  <th className="px-4 py-2.5 text-left font-medium">Promesa</th>
+                  <th className="px-4 py-2.5 text-left font-medium">
+                    {tipo === TIPOS.COTIZACION ? 'Vigencia' : 'Promesa'}
+                  </th>
                   <th className="px-4 py-2.5 text-right font-medium">Acciones</th>
                 </tr>
               </thead>
@@ -175,6 +210,8 @@ export default function ComprasPage() {
                   const vencida = s.fecha_promesa_entrega && abierta &&
                     new Date(s.fecha_promesa_entrega) < new Date();
                   const anejaUrgente = s.prioridad === 'Urgente' && abierta && s.dias_abierta >= 2;
+                  const plazo = s.estatus_actual === 'Enviada' ? vigencia(s.dias_para_vencer) : null;
+                  const conAlza = Number(s.partidas_con_alza) > 0;
 
                   return (
                     <tr key={s.id} className="hover:bg-surface-alt/60">
@@ -204,15 +241,37 @@ export default function ComprasPage() {
                       <td className="px-4 py-3 text-right tabular text-ink-2">
                         {s.total_partidas} <span className="text-muted">/ {numero(s.total_piezas)} pz</span>
                       </td>
-                      <td className="px-4 py-3 text-right tabular text-ink">{moneda(s.monto_estimado)}</td>
-                      <td className="px-4 py-3">
-                        <Badge texto={s.estatus_actual} estilo={ESTILO_ESTATUS[s.estatus_actual]} />
+                      <td className="px-4 py-3 text-right tabular text-ink">
+                        {moneda(s.monto_estimado)}
+                        {/* El importe es con el precio COTIZADO. Si Quiter ya
+                            lo movió, se avisa aquí mismo, que es donde se mira. */}
+                        {conAlza && (
+                          <span
+                            className="ml-1 inline-flex align-middle text-warning"
+                            title={Number(s.partidas_con_alza) === 1
+                              ? 'Una partida cambió de precio en Quiter desde que se cotizó'
+                              : `${s.partidas_con_alza} partidas cambiaron de precio en Quiter desde que se cotizó`}
+                          >
+                            <TriangleAlert size={13} />
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
-                        <span className={`text-xs tabular ${vencida ? 'font-medium text-critical' : 'text-ink-2'}`}>
-                          {fecha(s.fecha_promesa_entrega)}
-                          {vencida && <span className="ml-1">(vencida)</span>}
+                        <span title={EXPLICACION_ESTATUS[s.estatus_actual]}>
+                          <Badge texto={s.estatus_actual} estilo={ESTILO_ESTATUS[s.estatus_actual]} />
                         </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {plazo ? (
+                          <span className={`text-xs tabular ${plazo.urgente ? 'font-medium text-critical' : 'text-ink-2'}`}>
+                            {plazo.texto}
+                          </span>
+                        ) : (
+                          <span className={`text-xs tabular ${vencida ? 'font-medium text-critical' : 'text-ink-2'}`}>
+                            {fecha(s.fecha_promesa_entrega)}
+                            {vencida && <span className="ml-1">(atrasada)</span>}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
@@ -255,6 +314,7 @@ export default function ComprasPage() {
         id={detalleId}
         abierto={detalleId !== null}
         onCerrar={() => setDetalleId(null)}
+        onCambio={cargar}
       />
     </div>
   );

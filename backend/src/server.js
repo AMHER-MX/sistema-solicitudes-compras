@@ -8,6 +8,7 @@ import { env } from './config/env.js';
 import { cerrarPool, probarConexion } from './config/db.js';
 import { estadoErp } from './services/erp/index.js';
 import { cuentasDemoActivas } from './services/usuarios.service.js';
+import { detenerVigia, iniciarVigia } from './services/vigia.js';
 
 /**
  * Avisa si las cuentas de demostración siguen activas.
@@ -62,6 +63,9 @@ const servidor = app.listen(env.port, async () => {
     const hora = await probarConexion();
     console.log(` Base       : conectada (${hora.toISOString()})`);
     await avisarCuentasDemo();
+    // Solo con base viva: sin ella el vigía no tendría qué vencer y estaría
+    // gritando errores cada hora sin que nadie pueda hacer nada.
+    iniciarVigia();
   } catch (e) {
     console.error(` Base       : SIN CONEXIÓN -> ${e.message}`);
     console.error('   Revisa DATABASE_URL o las variables DB_* en tu archivo .env');
@@ -72,6 +76,7 @@ const servidor = app.listen(env.port, async () => {
 // Cierre ordenado: deja de aceptar conexiones y libera el pool.
 const cerrar = (senal) => async () => {
   console.log(`\n[${senal}] Cerrando servidor...`);
+  detenerVigia();
   servidor.close(async () => {
     await cerrarPool();
     process.exit(0);

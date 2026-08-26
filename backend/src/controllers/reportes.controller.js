@@ -25,6 +25,7 @@ import { badRequest } from '../utils/errors.js';
 /** Filtros de la petición, ya limpios. */
 function filtrosDe(req) {
   const f = {
+    tipo: req.query.tipo,
     id_vendedor: req.query.id_vendedor,
     sucursal: req.query.sucursal,
     prioridad: req.query.prioridad,
@@ -44,6 +45,7 @@ function filtrosDe(req) {
 /** Descripción legible de los filtros, para la portada del archivo. */
 function describirFiltros(req, filtros) {
   const partes = [];
+  if (filtros.tipo) partes.push(`Tipo: ${filtros.tipo === 'Cotizacion' ? 'Cotizaciones' : 'Pedidos'}`);
   if (filtros.estatus) partes.push(`Estatus: ${filtros.estatus}`);
   if (filtros.prioridad) partes.push(`Prioridad: ${filtros.prioridad}`);
   if (filtros.busqueda) partes.push(`Búsqueda: "${filtros.busqueda}"`);
@@ -81,8 +83,10 @@ export async function solicitudes(req, res) {
   });
 
   const inicio = escribirPortada(hoja, {
-    titulo: 'Solicitudes de compra · detalle por partida',
-    subtitulo: 'Un renglón por pieza pedida. El folio se repite en cada partida de la misma solicitud.',
+    titulo: 'Cotizaciones y pedidos · detalle por partida',
+    subtitulo: 'Un renglón por pieza. El folio se repite en cada partida, y es el MISMO '
+             + 'antes y después de que el cliente apruebe: una cotización que se cierra '
+             + 'no cambia de número, cambia de tipo.',
     generadoPor: req.usuario.nombre,
     filtros: describirFiltros(req, filtros),
   });
@@ -92,6 +96,7 @@ export async function solicitudes(req, res) {
     renglones,
     columnas: [
       { titulo: 'Folio',            campo: 'folio',                   ancho: 16 },
+      { titulo: 'Tipo',             campo: 'tipo',                    ancho: 12 },
       { titulo: 'Fecha',            campo: 'fecha_creacion',          ancho: 12, formato: FORMATO.fecha },
       { titulo: 'Estatus',          campo: 'estatus_actual',          ancho: 14 },
       { titulo: 'Prioridad',        campo: 'prioridad',               ancho: 10 },
@@ -104,9 +109,18 @@ export async function solicitudes(req, res) {
       { titulo: 'Cant.',            campo: 'cantidad_solicitada',     ancho: 9,  formato: FORMATO.cantidad, alineacion: 'right', total: true },
       { titulo: 'Exist. al pedir',  campo: 'existencia_real_almacen', ancho: 12, formato: FORMATO.cantidad, alineacion: 'right' },
       { titulo: 'Surtido',          campo: 'cantidad_surtida',        ancho: 9,  formato: FORMATO.cantidad, alineacion: 'right', total: true },
-      { titulo: 'Precio est.',      campo: 'precio_estimado',         ancho: 13, formato: FORMATO.moneda,   alineacion: 'right' },
-      { titulo: 'Importe est.',     campo: 'importe_estimado',        ancho: 15, formato: FORMATO.moneda,   alineacion: 'right', total: true },
+      // Los dos precios van juntos y en este orden a propósito: el cotizado
+      // primero, porque es el que se le cobra al cliente, y el de hoy al lado
+      // como referencia. La columna de variación es la que se filtra en Excel
+      // para encontrar lo que se cotizó por debajo de lo que hoy cuesta.
+      { titulo: 'Precio cotizado',  campo: 'precio_cotizado',         ancho: 15, formato: FORMATO.moneda,   alineacion: 'right' },
+      { titulo: 'Precio hoy',       campo: 'precio_lista_actual',     ancho: 13, formato: FORMATO.moneda,   alineacion: 'right' },
+      { titulo: 'Var. %',           campo: 'variacion_precio_pct',    ancho: 9,  formato: FORMATO.decimal1, alineacion: 'right' },
+      { titulo: 'Importe',          campo: 'importe_estimado',        ancho: 15, formato: FORMATO.moneda,   alineacion: 'right', total: true },
       { titulo: 'Comprador',        campo: 'comprador',               ancho: 20 },
+      { titulo: 'Enviada al cliente', campo: 'enviada_en',            ancho: 16, formato: FORMATO.fechaHora },
+      { titulo: 'Vence',            campo: 'vence_en',                ancho: 16, formato: FORMATO.fechaHora },
+      { titulo: 'Aprobada',         campo: 'convertida_en',           ancho: 16, formato: FORMATO.fechaHora },
       { titulo: 'Promesa',          campo: 'fecha_promesa_entrega',   ancho: 12, formato: FORMATO.fecha },
       { titulo: 'Cierre',           campo: 'fecha_cierre',            ancho: 16, formato: FORMATO.fechaHora },
       { titulo: 'Días abierta',     campo: 'dias_abierta',            ancho: 12, formato: FORMATO.decimal1, alineacion: 'right' },
