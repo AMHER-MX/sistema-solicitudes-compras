@@ -5,8 +5,18 @@ nixPkgs = ["nodejs_20"]
 
 [phases.install]
 cmds = [
-  "npm --prefix backend ci",
-  "npm --prefix frontend ci",
+  # El backend corre en producción y no tiene dependencias de desarrollo.
+  "npm --prefix backend ci --omit=dev",
+  # El frontend SÍ las necesita, aunque NODE_ENV diga production.
+  #
+  # Con NODE_ENV=production, `npm ci` se salta las devDependencies — y vite,
+  # que es quien COMPILA la interfaz, vive ahí. Sin --include=dev el build
+  # muere con "vite: not found", que suena a que falta instalar algo cuando en
+  # realidad npm decidió no instalarlo a propósito.
+  #
+  # Son herramientas de compilación: se usan aquí y no viajan al contenedor
+  # final, que solo sirve los archivos ya compilados.
+  "npm --prefix frontend ci --include=dev",
 ]
 
 [phases.build]
