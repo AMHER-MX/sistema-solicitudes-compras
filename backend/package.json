@@ -13,10 +13,11 @@
     "db:migrar": "node scripts/migrarDb.js",
     "db:estado": "node scripts/estadoDb.js",
     "smoke": "node scripts/smokeTest.js",
-    "test": "node scripts/testUsuarios.js && node scripts/validarSql.js && node scripts/smokeTest.js",
+    "test": "node scripts/testUsuarios.js && node scripts/validarSql.js && node scripts/testClientes.js && node scripts/smokeTest.js",
     "test:sql": "node scripts/validarSql.js",
     "test:usuarios": "node scripts/testUsuarios.js",
-    "start:nube": "node scripts/prepararNube.js && node src/server.js"
+    "start:nube": "node scripts/prepararNube.js && node src/server.js",
+    "test:clientes": "node scripts/testClientes.js"
   },
   "dependencies": {
     "axios": "^1.7.7",

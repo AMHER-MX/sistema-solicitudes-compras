@@ -22,6 +22,11 @@ import { env } from '../../config/env.js';
 // Path del servicio de existencias por almacén.
 const RUTA_EXISTENCIAS = '/api/existencias';
 
+// Padrón de clientes. Devuelve la lista COMPLETA: no acepta filtro de
+// búsqueda, así que no tiene caso llamarla en cada tecla del buscador. Por eso
+// los clientes se sincronizan a la base local y ahí se buscan.
+const RUTA_CLIENTES = '/api/clientes';
+
 /** Instancia de axios reutilizable con timeout y credenciales opcionales. */
 const http = axios.create({
   baseURL: env.erp.baseUrl || undefined,
@@ -80,4 +85,46 @@ export async function consultarExistenciasQuiter(termino, almacen) {
     : (data?.articulos ?? data?.data ?? data?.items ?? []);
 
   return articulos.map((a) => mapearArticulo(a, almacen));
+}
+
+/**
+ * Normaliza un cliente del ERP al contrato interno.
+ *
+ * De todo lo que manda la API se toma SOLO lo que sirve para identificar al
+ * cliente en una cotización: código, nombre y dónde está. Las cifras de venta
+ * mensual y promedio que también vienen ahí se quedan fuera a propósito — este
+ * sistema no las necesita, y guardar datos comerciales que nadie va a usar es
+ * cargar con una responsabilidad a cambio de nada.
+ */
+function mapearCliente(c) {
+  const nombre = (c.NombreCompleto ?? c.Cliente ?? c.nombre ?? '').toString().trim();
+
+  return {
+    codigo: (c.Codigo ?? c.codigo ?? c.CUENTA ?? '').toString().trim(),
+    nombre,
+    ciudad: (c.Ciudad ?? c.ciudad ?? '').toString().trim() || null,
+    estado: (c.Estado ?? c.estado ?? '').toString().trim() || null,
+  };
+}
+
+/**
+ * Trae el padrón completo de clientes.
+ *
+ * Son unos cientos de renglones, no un catálogo de piezas: cabe de sobra en
+ * una llamada y en la base local.
+ *
+ * @returns {Promise<Array<{codigo:string, nombre:string, ciudad:string|null, estado:string|null}>>}
+ */
+export async function consultarClientesQuiter() {
+  const { data } = await http.get(RUTA_CLIENTES);
+
+  const lista = Array.isArray(data)
+    ? data
+    : (data?.clientes ?? data?.data ?? data?.items ?? []);
+
+  return lista
+    .map(mapearCliente)
+    // Un cliente sin código no se puede sincronizar (no hay con qué
+    // identificarlo la próxima vez) y uno sin nombre no sirve de nada.
+    .filter((c) => c.codigo && c.nombre);
 }

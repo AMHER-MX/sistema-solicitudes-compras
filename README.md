@@ -204,7 +204,7 @@ clientes ────┘                        │
 | Tabla | Para qué sirve |
 |---|---|
 | `sucursales` | Agencias. `clave` es la clave de ALMACÉN en Quiter. |
-| `clientes` | Cliente al que se le promete el material (`codigo_erp`). |
+| `clientes` | **Copia del padrón de Quiter.** El vigía la refresca cada hora; `origen` distingue los reales de los tres inventados del seed. |
 | `usuarios` | Acceso al sistema. `rol` ∈ Vendedor / Comprador / Gerente. `debe_cambiar_password` marca las contraseñas temporales. |
 | `solicitudes_compras` | Encabezado: folio, **tipo** (Cotizacion/Pedido), prioridad, estatus, vigencia, promesa de entrega. |
 | `solicitudes_detalle` | Partidas. Guarda la **existencia real al momento de solicitar** y **dos precios**: el cotizado y el de hoy. |
@@ -277,11 +277,32 @@ y hace dos cosas que nadie tiene que acordarse de hacer:
 2. **Refresca** el precio de Quiter en los documentos vivos. En una cotización
    ya enviada eso NO toca lo que se le prometió al cliente: solo actualiza la
    referencia para poder avisar *"esto subió 8% desde que lo cotizaste"*.
+3. **Sincroniza el padrón de clientes** desde `GET /api/clientes` del ERP, para
+   que un cliente dado de alta esta mañana se pueda cotizar hoy mismo.
 
 Es seguro que corra dos veces: el `UPDATE` que vence selecciona y escribe en
 una sola instrucción, así que nada se vence dos veces ni duplica la bitácora.
 Si el ERP no contesta, **no** escribe precios de respaldo: pisar un precio real
 con uno inventado lo dejaría guardado como bueno y nadie se enteraría.
+
+### Los clientes
+
+Vienen de Quiter, no se capturan aquí. Tres decisiones que conviene conocer:
+
+- **Se copian a la base local en lugar de consultarse en vivo.** La API del ERP
+  devuelve el padrón COMPLETO y no acepta filtro de búsqueda: buscar en vivo
+  sería bajar cientos de renglones en cada tecla que teclea el vendedor. Con la
+  copia, el buscador responde al instante y sigue sirviendo si el ERP se cae.
+- **Un ERP caído no puede vaciar el padrón.** La función que lo lee devuelve
+  `null` cuando no pudo preguntar —distinto de una lista vacía— y la
+  sincronización se niega a aplicar cualquiera de los dos casos. Sin esa
+  distinción, un rato sin red dejaría a todos los vendedores sin clientes.
+- **Los clientes no se borran, se desactivan**, igual que los usuarios: una
+  cotización del año pasado tiene que seguir sabiendo a quién se le vendió. Los
+  tres clientes inventados del seed se apagan solos la primera vez que entra el
+  padrón real; en una instalación sin ERP siguen ahí para poder demostrarla.
+
+En `/api/health` se ve de un vistazo cuántos clientes hay y de dónde salieron.
 
 ---
 
@@ -308,7 +329,8 @@ requieren el header `Authorization: Bearer <token>`.
 | `GET` | `/dashboard/gerencia?dias=30&sucursal=1` | Comprador, Gerente | KPIs y concentrados. |
 | `GET` | `/reportes/solicitudes` · `/reportes/historial` | todos | Excel. Un Vendedor solo baja lo suyo. |
 | `GET` | `/reportes/faltantes` · `/reportes/indicadores` | Comprador, Gerente | Excel de gestión. |
-| `GET` | `/catalogos/sucursales` · `/catalogos/clientes?q=` | todos | Para los selects. |
+| `GET` | `/catalogos/sucursales` | todos | Para los selects. |
+| `GET` | `/catalogos/clientes?q=` | todos | Buscador del padrón de Quiter. Devuelve 50 y avisa con `hay_mas` si quedaron fuera. |
 | `GET` `POST` `PATCH` | `/usuarios` … | Gerente | Administración de cuentas. |
 
 Reglas de negocio que impone la API, no solo la interfaz:

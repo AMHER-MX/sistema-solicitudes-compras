@@ -1,8 +1,7 @@
 /**
  * El vigía: lo que el sistema hace solo, sin que nadie entre a empujarlo.
  *
- * Dos tareas, las dos nacidas de la misma idea —que una cotización no se
- * quede colgada para siempre esperando a un cliente que ya no va a contestar:
+ * Tres tareas que nadie tiene que acordarse de hacer:
  *
  *   1. VENCER   Las cotizaciones enviadas cuyo plazo se cumplió pasan a
  *               Vencida. Si alguien las quería vivas, tenía un mes para
@@ -12,6 +11,9 @@
  *               Quiter. En una cotización ya enviada eso NO cambia lo que se
  *               le prometió al cliente: solo actualiza la referencia, para
  *               poder avisar "esto subió 8% desde que lo cotizaste".
+ *
+ *   3. CLIENTES Se refresca el padrón desde Quiter, para que un cliente dado
+ *               de alta esta mañana se pueda cotizar hoy mismo.
  *
  * POR QUÉ VIVE DENTRO DEL SERVIDOR
  *   El hospedaje mantiene el proceso corriendo, así que un temporizador aquí
@@ -28,6 +30,7 @@
  *   la siguiente vuelta.
  */
 import { env } from '../config/env.js';
+import { sincronizarClientes } from './clientes.service.js';
 import {
   documentosParaRefrescarPrecio, refrescarPrecios, vencerCotizacionesCaducadas,
 } from './solicitudes.service.js';
@@ -83,6 +86,27 @@ async function tareaPrecios() {
 }
 
 /**
+ * Refresca el padrón de clientes.
+ *
+ * Si el ERP no contesta no pasa nada: el servicio se niega a tocar la tabla
+ * antes que arriesgarse a dejar a los vendedores sin clientes a quién cotizar.
+ */
+async function tareaClientes() {
+  const r = await sincronizarClientes();
+
+  if (!r.ok) {
+    console.warn(`[vigía] Padrón de clientes sin actualizar (${r.motivo}). Se queda el que había.`);
+    return r;
+  }
+  if (r.nuevos || r.desactivados) {
+    console.log(`[vigía] Padrón de clientes: ${r.total} en Quiter`
+              + `${r.nuevos ? `, ${r.nuevos} nuevo(s)` : ''}`
+              + `${r.desactivados ? `, ${r.desactivados} dado(s) de baja` : ''}.`);
+  }
+  return r;
+}
+
+/**
  * Una vuelta completa. Exportada para poder dispararla a mano desde una
  * prueba sin esperar una hora.
  */
@@ -100,8 +124,9 @@ export async function darUnaVuelta() {
     // configurado, el catálogo simulado devolvería precios inventados y
     // pisaría los reales: mejor no tocar nada.
     const precios = env.erp.baseUrl ? await tareaPrecios() : { revisados: 0, conAlza: 0 };
+    const clientes = env.erp.baseUrl ? await tareaClientes() : { ok: false, motivo: 'sin ERP' };
 
-    return { vencidas, ...precios, ms: Date.now() - arranque };
+    return { vencidas, ...precios, clientes, ms: Date.now() - arranque };
   } catch (error) {
     // Que el vigía falle no puede impedir que la gente use el sistema.
     console.error(`[vigía] La vuelta falló: ${error.message}`);
@@ -123,7 +148,8 @@ export function iniciarVigia() {
   temporizador = setInterval(() => { darUnaVuelta(); }, CADA_MS);
   temporizador.unref?.();
 
-  console.log(`[vigía] Activo: revisa vencimientos y precios cada ${CADA_MS / 60000} minutos.`);
+  console.log(`[vigía] Activo: revisa vencimientos, precios y clientes `
+            + `cada ${CADA_MS / 60000} minutos.`);
 }
 
 /** Lo detiene. La usan las pruebas para que el proceso pueda salir. */

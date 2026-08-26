@@ -10,6 +10,7 @@ import reportesRoutes from './reportes.routes.js';
 import solicitudesRoutes from './solicitudes.routes.js';
 import usuariosRoutes from './usuarios.routes.js';
 import { probarConexion } from '../config/db.js';
+import { estadoPadron } from '../services/clientes.service.js';
 import { estadoErp } from '../services/erp/index.js';
 import { ESTATUS, PRIORIDADES, TRANSICIONES } from '../utils/estatus.js';
 import { asyncHandler } from '../utils/errors.js';
@@ -24,6 +25,9 @@ router.get('/health', asyncHandler(async (_req, res) => {
     servicio: 'sgc-compras-api',
     bd: { conectada: true, hora: ahora },
     erp: await estadoErp(),
+    // Con esto se ve de un vistazo si el padrón real ya entró o si el sistema
+    // sigue trabajando con los tres clientes inventados del seed.
+    clientes: await estadoPadron(),
   });
 }));
 

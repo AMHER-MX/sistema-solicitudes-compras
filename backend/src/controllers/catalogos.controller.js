@@ -4,6 +4,7 @@
  *  GET /api/catalogos/clientes?q=texto
  */
 import { query } from '../config/db.js';
+import { buscarClientes } from '../services/clientes.service.js';
 
 export async function sucursales(_req, res) {
   const rows = await query(
@@ -16,18 +17,15 @@ export async function sucursales(_req, res) {
   res.json({ ok: true, sucursales: rows });
 }
 
+/**
+ * Buscador de clientes.
+ *
+ * Los clientes vienen del padrón de Quiter, que el vigía copia a la base local
+ * cada hora. Se busca aquí y no contra el ERP porque su API devuelve el padrón
+ * completo sin filtro: buscar en vivo sería bajar cientos de renglones en cada
+ * tecla que teclea el vendedor.
+ */
 export async function clientes(req, res) {
-  const q = (req.query.q ?? '').toString().trim();
-
-  const rows = await query(
-    `SELECT id, codigo_erp, nombre, rfc
-     FROM   clientes
-     WHERE  activo
-       AND (@q = '' OR nombre ILIKE @patron OR codigo_erp ILIKE @patron)
-     ORDER BY nombre
-     LIMIT 50`,
-    { q, patron: `%${q}%` },
-  );
-
-  res.json({ ok: true, clientes: rows });
+  const resultado = await buscarClientes(req.query.q ?? '');
+  res.json({ ok: true, ...resultado });
 }

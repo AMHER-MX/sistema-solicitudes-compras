@@ -21,7 +21,9 @@
  */
 import { env } from '../../config/env.js';
 import { buscarMock } from './catalogoMock.js';
-import { consultarExistenciasQuiter, quiterConfigurado } from './quiterClient.js';
+import {
+  consultarClientesQuiter, consultarExistenciasQuiter, quiterConfigurado,
+} from './quiterClient.js';
 
 // ── Caché en memoria muy simple (TTL corto) ─────────────────────────────────
 // Evita golpear el ERP en cada tecla del buscador del vendedor.
@@ -122,6 +124,25 @@ export async function existenciaDeSku(sku, almacen) {
   const { articulos } = await consultarExistencias({ termino: sku, almacen });
   const exacto = articulos.find((a) => a.sku.toLowerCase() === String(sku).toLowerCase());
   return exacto ? Number(exacto.existencia) : 0;
+}
+
+/**
+ * Padrón de clientes del ERP.
+ *
+ * Devuelve `null` —no una lista vacía— cuando no hay ERP configurado o cuando
+ * no contestó. La diferencia importa: quien sincroniza tiene que poder
+ * distinguir "el ERP dice que no hay clientes" de "no pude preguntar", porque
+ * lo segundo NUNCA debe hacerle creer que el padrón se vació.
+ */
+export async function clientesDelErp() {
+  if (origenActivo() !== 'QUITER_API') return null;
+
+  try {
+    return await consultarClientesQuiter();
+  } catch (error) {
+    console.warn(`[ERP] No se pudo leer el padrón de clientes (${error.message}).`);
+    return null;
+  }
 }
 
 /** Estado de la integración, para el endpoint /api/health. */

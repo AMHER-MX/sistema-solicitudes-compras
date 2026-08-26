@@ -3,25 +3,21 @@
  * Aparece cuando el vendedor agrega al menos un artículo desde el buscador
  * (típicamente porque salió con existencia 0).
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Send, Trash2, TriangleAlert } from 'lucide-react';
-import { catalogosApi, solicitudesApi } from '../api/client.js';
+import { solicitudesApi } from '../api/client.js';
 import { PRIORIDADES, moneda, numero } from '../lib/constantes.js';
+import SelectorCliente from './SelectorCliente.jsx';
 import {
   Alerta, Boton, Campo, Input, Select, Tarjeta, TarjetaEncabezado, TextArea,
 } from './ui/Primitivos.jsx';
 
 export default function FormularioSolicitud({ items, setItems, onCreada }) {
-  const [clientes, setClientes] = useState([]);
-  const [idCliente, setIdCliente] = useState('');
+  const [idCliente, setIdCliente] = useState(null);
   const [prioridad, setPrioridad] = useState('Normal');
   const [observaciones, setObservaciones] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    catalogosApi.clientes().then((d) => setClientes(d.clientes)).catch(() => {});
-  }, []);
 
   const cambiarCantidad = (sku, cantidad) =>
     setItems((prev) => prev.map((it) => (it.sku === sku ? { ...it, cantidad } : it)));
@@ -38,7 +34,7 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
     setEnviando(true);
     try {
       const { solicitud, aviso } = await solicitudesApi.crear({
-        id_cliente: idCliente ? Number(idCliente) : null,
+        id_cliente: idCliente ?? null,
         prioridad,
         observaciones: observaciones.trim() || null,
         items: items.map((it) => ({
@@ -53,7 +49,7 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
       setItems([]);
       setObservaciones('');
       setPrioridad('Normal');
-      setIdCliente('');
+      setIdCliente(null);
       // El aviso lo redacta el servidor: dice si ya se puede mandar al
       // cliente o si pasó a Compras por faltantes.
       onCreada?.(solicitud, aviso);
@@ -70,8 +66,9 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
     <Tarjeta>
       <TarjetaEncabezado
         icono={TriangleAlert}
-        titulo="Nueva solicitud a compras"
-        descripcion={`${items.length} artículo(s) por solicitar`}
+        titulo="Nueva cotización"
+        descripcion={`${items.length} artículo(s). Si algo no hay en existencia, `
+          + 'pasa a Compras antes de poderse mandar al cliente.'}
       />
 
       <form onSubmit={enviar} className="space-y-4 p-5">
@@ -148,11 +145,8 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
             </Select>
           </Campo>
 
-          <Campo etiqueta="Cliente" hint="Opcional: déjalo vacío si es para stock propio.">
-            <Select value={idCliente} onChange={(e) => setIdCliente(e.target.value)}>
-              <option value="">— Sin cliente —</option>
-              {clientes.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-            </Select>
+          <Campo etiqueta="Cliente" hint="Del padrón de Quiter. Escribe para buscarlo.">
+            <SelectorCliente valor={idCliente} onCambiar={setIdCliente} />
           </Campo>
         </div>
 
@@ -172,7 +166,7 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
             Cancelar
           </Boton>
           <Boton type="submit" icono={Send} cargando={enviando}>
-            Enviar solicitud
+            Crear cotización
           </Boton>
         </div>
       </form>
