@@ -43,7 +43,13 @@ const VISTAS_POR_TIPO = {
 };
 
 export default function ComprasPage() {
-  const [tipo, setTipo] = useState(TIPOS.PEDIDO);
+  // Arranca en Cotizaciones, no en Pedidos.
+  //
+  // El día de un comprador empieza consiguiendo precios de lo que los
+  // vendedores acaban de mandar; los pedidos ya tienen orden puesta y se
+  // revisan después. Cuando la pantalla abría en Pedidos, lo primero que hacía
+  // cada mañana era cambiar de pestaña.
+  const [tipo, setTipo] = useState(TIPOS.COTIZACION);
   const [vistaRapida, setVistaRapida] = useState('abiertas');
   const [prioridad, setPrioridad] = useState('');
   const [estatus, setEstatus] = useState('');

@@ -11,11 +11,13 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Check, Clock, RefreshCw, Send } from 'lucide-react';
-import { solicitudesApi } from '../api/client.js';
+import { sesion, solicitudesApi } from '../api/client.js';
 import {
-  ESTILO_ESTATUS, ESTILO_PRIORIDAD, EXPLICACION_ESTATUS, NOMBRE_TIPO, TIPOS,
-  cambioDePrecio, fecha, fechaHora, moneda, numero, vigencia,
+  ESTILO_ESTATUS, ESTILO_ESTATUS_COMPRAS, ESTILO_PRIORIDAD, EXPLICACION_ESTATUS,
+  EXPLICACION_ESTATUS_COMPRAS, NOMBRE_ESTATUS_COMPRAS, NOMBRE_TIPO, TIPOS,
+  cambioDePrecio, fecha, fechaHora, moneda, numero, rangoEntrega, vigencia,
 } from '../lib/constantes.js';
+import PanelCompras from './PanelCompras.jsx';
 import { Alerta, Badge, Boton, Cargando, Modal } from './ui/Primitivos.jsx';
 
 export default function DetalleSolicitudModal({ id, abierto, onCerrar, onCambio }) {
@@ -47,6 +49,13 @@ export default function DetalleSolicitudModal({ id, abierto, onCerrar, onCambio 
   const s = datos?.solicitud;
   const acciones = datos?.acciones ?? {};
   const esCotizacion = s?.tipo === TIPOS.COTIZACION;
+  const usuario = sesion.obtenerUsuario();
+  // El panel de Compras sale para quien de verdad captura precios, y solo
+  // mientras el documento siga siendo una cotización viva: sobre un pedido ya
+  // hay orden puesta con el proveedor y no se toca.
+  const puedeTrabajarla = esCotizacion
+    && ['Comprador', 'Gerente'].includes(usuario?.rol)
+    && !['Cancelada', 'Vencida'].includes(s?.estatus_actual);
   const plazo = s?.estatus_actual === 'Enviada' ? vigencia(s.dias_para_vencer) : null;
 
   /** Manda la cotización al cliente. `confirmar` la manda pese al cambio de precio. */
@@ -121,6 +130,21 @@ export default function DetalleSolicitudModal({ id, abierto, onCerrar, onCambio 
               <Badge texto={s.estatus_actual} estilo={ESTILO_ESTATUS[s.estatus_actual]} />
             </span>
             <Badge texto={s.prioridad} estilo={ESTILO_PRIORIDAD[s.prioridad]} />
+            {s.estatus_compras && esCotizacion && (
+              <span title={EXPLICACION_ESTATUS_COMPRAS[s.estatus_compras]}>
+                <Badge
+                  texto={`Compras: ${NOMBRE_ESTATUS_COMPRAS[s.estatus_compras] ?? s.estatus_compras}`}
+                  estilo={ESTILO_ESTATUS_COMPRAS[s.estatus_compras]}
+                />
+              </span>
+            )}
+            {/* La versión solo se enseña cuando hay más de una: en la primera
+                no significa nada y solo sería un número más que descifrar. */}
+            {Number(s.version) > 1 && (
+              <span title="Se recotizó. El folio es el mismo; lo que cambió es el contenido.">
+                <Badge texto={`Versión ${s.version}`} />
+              </span>
+            )}
             <span className="text-xs text-ink-2">
               Levantó <strong className="font-medium text-ink">{s.vendedor_nombre}</strong> el {fecha(s.fecha_creacion)}
             </span>
@@ -223,9 +247,19 @@ export default function DetalleSolicitudModal({ id, abierto, onCerrar, onCambio 
               <dd className="mt-0.5 font-medium text-ink">
                 {esCotizacion
                   ? (s.vence_en ? fecha(s.vence_en) : `${s.dias_vigencia} días al enviarla`)
-                  : fecha(s.fecha_promesa_entrega)}
+                  : rangoEntrega(s.fecha_promesa_entrega, s.fecha_promesa_hasta)}
               </dd>
             </div>
+            {/* En una cotización la entrega prometida es dato aparte de la
+                vigencia: son dos relojes distintos y confundirlos sale caro. */}
+            {esCotizacion && (s.fecha_promesa_entrega || s.fecha_promesa_hasta) && (
+              <div>
+                <dt className="text-muted">Entrega prometida</dt>
+                <dd className="mt-0.5 font-medium text-ink">
+                  {rangoEntrega(s.fecha_promesa_entrega, s.fecha_promesa_hasta)}
+                </dd>
+              </div>
+            )}
             <div>
               <dt className="text-muted">Comprador asignado</dt>
               <dd className="mt-0.5 font-medium text-ink">{s.comprador_nombre || '—'}</dd>
@@ -245,6 +279,13 @@ export default function DetalleSolicitudModal({ id, abierto, onCerrar, onCambio 
               <span className="font-medium text-ink">Nota del vendedor: </span>
               {s.observaciones}
             </p>
+          )}
+
+          {puedeTrabajarla && (
+            <PanelCompras
+              solicitud={s}
+              onGuardado={async () => { await cargar(); onCambio?.(); }}
+            />
           )}
 
           {/* Partidas */}
@@ -284,6 +325,16 @@ export default function DetalleSolicitudModal({ id, abierto, onCerrar, onCambio 
                               {cambio.texto}
                             </p>
                           )}
+                          {d.origen === 'LIBRE' && (
+                            <p className="mt-1 text-[11px] text-warning">
+                              No está en el inventario de Quiter.
+                            </p>
+                          )}
+                          {d.nota_compras && (
+                            <p className="mt-1 text-[11px] text-ink-2">
+                              <span className="text-muted">Compras: </span>{d.nota_compras}
+                            </p>
+                          )}
                         </td>
                         <td className="px-3 py-2 text-right tabular">{numero(d.cantidad_solicitada)}</td>
                         <td className="px-3 py-2 text-right tabular">
@@ -291,7 +342,17 @@ export default function DetalleSolicitudModal({ id, abierto, onCerrar, onCambio 
                             ? <span className="text-critical">0</span>
                             : numero(d.existencia_real_almacen)}
                         </td>
-                        <td className="px-3 py-2 text-right tabular text-ink-2">{moneda(unitario)}</td>
+                        <td className="px-3 py-2 text-right tabular text-ink-2">
+                          {d.precio_cotizado === null
+                            ? <span className="text-warning">Sin precio</span>
+                            : moneda(unitario)}
+                          {/* Saber que un precio lo negoció una persona cambia
+                              cómo se lee: no es el de lista y no debería
+                              "corregirse" contra Quiter. */}
+                          {d.precio_origen === 'COMPRADOR' && (
+                            <span className="block text-[10px] text-muted">lo puso Compras</span>
+                          )}
+                        </td>
                         <td className="px-3 py-2 text-right tabular text-ink-2">
                           {moneda(Number(d.cantidad_solicitada) * unitario)}
                         </td>
@@ -299,6 +360,22 @@ export default function DetalleSolicitudModal({ id, abierto, onCerrar, onCambio 
                     );
                   })}
                 </tbody>
+                {/* El total va al pie de la tabla, no en una tarjeta aparte: es
+                    el número que la gente copia a un correo y tiene que estar
+                    pegado a los renglones que lo forman. */}
+                <tfoot className="border-t border-hairline bg-surface-alt">
+                  <tr>
+                    <td colSpan={3} className="px-3 py-2 text-right text-xs text-muted">
+                      {s.totales?.completo === false
+                        ? `Total de lo cotizado (faltan ${s.totales.sin_precio} partida(s) por precio)`
+                        : `Total · ${numero(s.totales?.piezas ?? 0)} pieza(s)`}
+                    </td>
+                    <td />
+                    <td className="px-3 py-2 text-right font-semibold tabular text-ink">
+                      {moneda(s.totales?.importe ?? 0)}
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           </section>

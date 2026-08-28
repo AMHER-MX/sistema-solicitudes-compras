@@ -84,7 +84,10 @@ export default function VendedorPage() {
         descripcion: articulo.descripcion,
         precio_lista: articulo.precio_lista,
         existencia: articulo.existencia,
-        cantidad: 1,
+        // Una parte capturada a mano llega con la cantidad que el cliente pidió;
+        // las del catálogo se agregan de una en una y se ajustan en la tabla.
+        cantidad: Number(articulo.cantidad) > 0 ? Number(articulo.cantidad) : 1,
+        origen: articulo.origen ?? 'QUITER',
       }];
     });
   };

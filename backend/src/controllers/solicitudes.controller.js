@@ -5,14 +5,17 @@
  *  GET    /api/solicitudes            (filtros: id_vendedor, prioridad, estatus, sucursal)
  *  GET    /api/solicitudes/:id
  *  PATCH  /api/solicitudes/:id/estatus
+ *  PATCH  /api/solicitudes/:id            (editar / recotizar)
+ *  PATCH  /api/solicitudes/:id/compras    (estatus del trabajo de Compras)
  */
 import {
-  cambiarEstatus, convertirAPedido, crearSolicitud, enviarAlCliente,
-  listarSolicitudes, obtenerSolicitud, refrescarPrecios,
+  cambiarEstatus, convertirAPedido, crearSolicitud, editarSolicitud,
+  enviarAlCliente, fijarEstatusCompras, listarSolicitudes, obtenerSolicitud,
+  refrescarPrecios,
 } from '../services/solicitudes.service.js';
 import {
-  DIAS_VIGENCIA_DEFAULT, ESTATUS, PRIORIDADES, ROLES, TIPOS,
-  esEstatusValido, esTipoValido, puedeConvertir, puedeConvertirlo,
+  DIAS_VIGENCIA_DEFAULT, ESTATUS, ESTATUS_COMPRAS_VALIDOS, PRIORIDADES, ROLES, TIPOS,
+  esEstatusValido, esTipoValido, puedeConvertir, puedeConvertirlo, puedeEditarlo,
   siguientesEstatus, transicionPermitida,
 } from '../utils/estatus.js';
 import { badRequest, conflict, forbidden } from '../utils/errors.js';
@@ -137,8 +140,15 @@ export async function detalle(req, res) {
     // las mismas reglas que aplica el servidor al ejecutarlos, para que la
     // pantalla nunca ofrezca un botón que va a acabar en error.
     acciones: {
+      // La condición del ROL no es un detalle: enviar al cliente lo hace quien
+      // lo atiende —el vendedor que la levantó, o Gerencia—, no Compras. Sin
+      // esta parte, al comprador le salía el botón y el servidor le respondía
+      // 403: exactamente lo que este bloque existe para evitar.
       puede_enviar: solicitud.tipo === TIPOS.COTIZACION
-        && [ESTATUS.BORRADOR, ESTATUS.CON_COMPRAS].includes(solicitud.estatus_actual),
+        && [ESTATUS.BORRADOR, ESTATUS.CON_COMPRAS].includes(solicitud.estatus_actual)
+        && (req.usuario.rol === ROLES.GERENTE
+            || (req.usuario.rol === ROLES.VENDEDOR
+                && Number(solicitud.id_vendedor) === Number(req.usuario.id))),
       puede_convertir: puedeConvertir(solicitud) && puedeConvertirlo(req.usuario, solicitud),
     },
   });
@@ -217,12 +227,99 @@ export async function actualizarPrecios(req, res) {
   });
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/solicitudes/:id  — editar y recotizar
+// ─────────────────────────────────────────────────────────────────────────────
+export async function editar(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw badRequest('El id no es válido');
+
+  const actual = await obtenerSolicitud(id);
+  exigirAcceso(req.usuario, actual);
+
+  // El "no se edita un pedido" se explica ANTES de revisar permisos. Si no,
+  // alguien con todos los permisos del mundo recibiría "no puedes editar esto"
+  // y se quedaría pensando que le falta un rol, cuando lo que pasa es otra cosa.
+  if (actual.tipo !== TIPOS.COTIZACION) {
+    throw conflict('Un pedido ya tiene orden puesta con el proveedor y no se edita. '
+                 + 'Si cambió, cancélalo y levanta uno nuevo.');
+  }
+  if (!puedeEditarlo(req.usuario, actual)) {
+    throw forbidden('No puedes editar esta cotización.');
+  }
+
+  const { items, comentario, ...cambios } = req.body ?? {};
+
+  // Un vendedor no pone precios: los consigue Compras. Si le dejáramos, el
+  // precio del sistema y el que negoció el comprador dejarían de ser el mismo
+  // número sin que nadie sepa cuál se le prometió al cliente.
+  if (req.usuario.rol === ROLES.VENDEDOR && Array.isArray(items)) {
+    const tocaPrecios = items.some(
+      (it) => it.precio_origen === 'COMPRADOR' || it.nota_compras !== undefined,
+    );
+    if (tocaPrecios) {
+      throw forbidden('El precio de compra lo captura Compras. '
+                    + 'Tú puedes cambiar partidas, cantidades y el cliente.');
+    }
+  }
+
+  // Campos que NADIE edita por aquí: son del sistema o tienen su propio camino.
+  for (const prohibido of ['folio', 'tipo', 'estatus_actual', 'version',
+                           'id_vendedor', 'enviada_en', 'vence_en', 'convertida_en']) {
+    delete cambios[prohibido];
+  }
+
+  if (cambios.prioridad && !PRIORIDADES.includes(cambios.prioridad)) {
+    throw badRequest(`Prioridad inválida. Usa: ${PRIORIDADES.join(', ')}`);
+  }
+
+  const solicitud = await editarSolicitud({
+    id, usuario: req.usuario, items, cambios, comentario,
+  });
+
+  res.json({
+    ok: true,
+    solicitud,
+    recotizada: solicitud.version > actual.version,
+    aviso: solicitud.version > actual.version
+      ? `Esta es la versión ${solicitud.version}. El cliente tiene la `
+        + `${actual.version}: hay que volver a enviársela.`
+      : undefined,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/solicitudes/:id/compras  — cómo va el trabajo de Compras
+// ─────────────────────────────────────────────────────────────────────────────
+export async function actualizarEstatusCompras(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw badRequest('El id no es válido');
+
+  const { estatus_compras, comentario } = req.body ?? {};
+  if (!ESTATUS_COMPRAS_VALIDOS.includes(estatus_compras)) {
+    throw badRequest(`Estatus de compras inválido. Usa: ${ESTATUS_COMPRAS_VALIDOS.join(', ')}`);
+  }
+
+  const actual = await obtenerSolicitud(id);
+  exigirAcceso(req.usuario, actual);
+
+  const solicitud = await fijarEstatusCompras({
+    id, id_usuario: req.usuario.id, estatus_compras, comentario,
+  });
+
+  res.json({ ok: true, solicitud });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH /api/solicitudes/:id/estatus
 // ─────────────────────────────────────────────────────────────────────────────
 export async function actualizarEstatus(req, res) {
   const id = Number(req.params.id);
-  const { estatus, comentario, fecha_promesa_entrega, asignarme = true } = req.body ?? {};
+  const {
+    estatus, comentario, fecha_promesa_entrega, fecha_promesa_hasta,
+    asignarme = true,
+  } = req.body ?? {};
 
   if (!estatus) throw badRequest('Falta el campo `estatus`');
   if (!esEstatusValido(estatus)) {
@@ -263,6 +360,7 @@ export async function actualizarEstatus(req, res) {
     estatus_nuevo: estatus,
     comentario,
     fecha_promesa_entrega,
+    fecha_promesa_hasta,
     asignarme: Boolean(asignarme) && req.usuario.rol !== ROLES.VENDEDOR,
   });
 

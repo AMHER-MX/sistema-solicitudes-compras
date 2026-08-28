@@ -448,6 +448,84 @@ Cada archivo lleva además una portada con quién lo bajó, cuándo y con qué
 filtros — un Excel reenviado tres veces por correo, sin eso, es un dato sin
 origen que nadie puede reproducir.
 
+
+---
+
+## 8-bis. Lo que pidieron los compradores
+
+Cinco cambios que salieron de cómo trabajan de verdad, no de cómo se suponía
+que trabajaban.
+
+### Rango de entrega, no fecha exacta
+
+Un proveedor no promete "el 30 de agosto", promete "entre el 30 y el 2". Hay
+dos columnas (`fecha_promesa_entrega` y `fecha_promesa_hasta`) y dejar sólo la
+primera sigue siendo válido: es una fecha exacta.
+
+### El estatus de Compras es un eje APARTE
+
+| | Quién lo lee | Valores |
+|---|---|---|
+| `estatus_actual` | El vendedor y, a través de él, el cliente | Borrador · Con Compras · Enviada · Vencida · (los de Pedido) |
+| `estatus_compras` | El comprador | En Cotización · Cotización Parcial · Completada · Cancelada |
+
+Un mismo folio está "Con Compras" para el vendedor y "Cotización Parcial" para
+el comprador **al mismo tiempo**, y las dos frases son ciertas. Fundirlas en una
+columna obligaría al vendedor a aprenderse el vocabulario de Compras para saber
+si ya puede mandarle algo a su cliente, y le quitaría a Compras el rastro de En
+Tránsito y Recibido — que es lo que avisa cuándo llega la pieza.
+
+Compras se mueve libre entre sus cuatro estados: no hay máquina de estados ahí.
+Conseguir precios no es lineal, y ponerle candados sólo lograría que el
+comprador dejara el estatus en el primero que le tocó y administrara el resto
+por WhatsApp.
+
+### Recotizar sin perder el folio
+
+El folio **nunca** cambia. Lo que sube es `version`, y sólo si el cliente ya
+había visto el documento: corregir un borrador que nadie ha mirado no es
+recotizar, es seguir capturando.
+
+Recotizar saca la cotización de `Enviada` y le borra `vence_en`. Si el cliente
+tiene en la mano un papel que ya no coincide con el sistema, el sistema tiene
+que decirlo, y el reloj de vigencia se reinicia cuando se vuelva a mandar.
+
+Un **Pedido no se edita**: ya hay orden puesta con un proveedor. Si cambió, se
+cancela y se levanta otro.
+
+### El precio que consigue el comprador
+
+`precio_origen` dice de dónde salió el precio de cada partida (`QUITER` o
+`COMPRADOR`). De esa marca dependen tres comportamientos, y los tres importan:
+
+1. **El vigía no lo pisa.** Un precio marcado `COMPRADOR` sólo refresca
+   `precio_lista_actual`; su `precio_cotizado` no se toca. Sin esto, el
+   comprador se pasa la mañana negociando y el refresco de la hora siguiente se
+   lo sustituye por el de lista **en silencio**.
+2. **Al enviar no se congela contra Quiter.** El `UPDATE` de congelado sólo
+   toca las partidas `QUITER`.
+3. **No dispara el aviso de "subió de precio".** Que Quiter diga otra cosa que
+   lo que el comprador negoció es lo esperado, no una alerta. Si el aviso
+   amarillo saliera en casi todos los renglones, en dos semanas nadie miraría
+   ninguno — incluidos los que sí importan.
+
+El total del documento se calcula en el servidor (`totales` en el detalle) para
+que la pantalla, el Excel y cualquier reporte digan el mismo número, y avisa
+cuando está incompleto: un total que suma partidas todavía sin cotizar no es el
+total, es una parte.
+
+### Partidas que Quiter no conoce
+
+El cliente pide números de parte que el inventario no tiene. Antes eso acababa
+en WhatsApp o en una libreta — fuera del sistema y fuera de todo reporte. Ahora
+el vendedor la captura con descripción y cantidad, queda marcada `origen =
+'LIBRE'`, y **manda la cotización a Compras aunque todo lo demás esté en
+existencia**: alguien tiene que averiguar si esa pieza se consigue, a cómo y en
+cuánto tiempo.
+
+A esas partidas no se les pregunta existencia ni precio al ERP, ni se les
+inventa un cero "consultado".
+
 ---
 
 ## 9. De dónde salen las existencias

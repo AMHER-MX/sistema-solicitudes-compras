@@ -210,7 +210,11 @@ async function main() {
 
   const detalle = await api(`/solicitudes/${sol.id}`, { token: tokenComprador });
   check('Detalle trae historial inicial', detalle.data?.solicitud?.historial?.length === 1);
-  check('Detalle dice que ya se puede enviar', detalle.data?.acciones?.puede_enviar === true);
+  // Se consulta con el token del VENDEDOR: enviarla al cliente es cosa de quien
+  // lo atiende, no de Compras, y el detalle tiene que decir lo mismo que va a
+  // hacer el servidor cuando le den al botón.
+  const detalleV = await api(`/solicitudes/${sol.id}`, { token: tokenVendedor });
+  check('Detalle dice que ya se puede enviar', detalleV.data?.acciones?.puede_enviar === true);
   check('Detalle dice que todavía NO se puede convertir',
     detalle.data?.acciones?.puede_convertir === false);
 
@@ -515,6 +519,264 @@ async function main() {
     metodo: 'PATCH', token: tokenGerente, body: { activo: false },
   });
   check('Se puede desactivar la cuenta de prueba', baja.status === 200);
+
+
+  // Los cinco cambios que pidieron los compradores. Cada bloque prueba la
+  // regla que cuesta dinero si se rompe, no que el endpoint responda 200.
+  console.log('\n== Partida que Quiter no conoce ==');
+
+  // El artículo real se toma del ERP, no se escribe a mano: su precio de lista
+  // tiene centavos, y una prueba que lo redondee falla contra el propio guardián
+  // de precios del sistema —que hace bien su trabajo— y hace perder media hora
+  // buscando un error que no existe.
+  const REAL = conStock;
+  const PRECIO_REAL = Number(REAL.precio_lista);
+  // Lo que el comprador consigue, distinto del de lista a propósito: si fueran
+  // iguales, una prueba de "no me lo pises" no probaría nada.
+  const NEGOCIADO = Math.round((PRECIO_REAL * 0.82) * 100) / 100;
+
+  const libre = await api('/solicitudes', {
+    metodo: 'POST', token: tokenVendedor,
+    body: {
+      id_sucursal: 1, prioridad: 'Normal', almacen_erp: '101',
+      items: [
+        // Ésta sí existe y hay de sobra: por sí sola no mandaría nada a Compras.
+        { sku_producto: REAL.sku, descripcion: REAL.descripcion, cantidad_solicitada: 1,
+          precio_estimado: PRECIO_REAL, existencia_real_almacen: REAL.existencia },
+        // Ésta el cliente la pidió y el inventario no la conoce.
+        { sku_producto: 'XYZ-NO-EXISTE-9', descripcion: 'Bomba hidráulica Cummins',
+          cantidad_solicitada: 2, origen: 'LIBRE' },
+      ],
+    },
+  });
+  check('Se puede levantar con un número de parte inexistente', libre.status === 201,
+    `(${libre.status} ${libre.data?.error ?? ''})`);
+
+  const idLibre = libre.data?.solicitud?.id;
+  const detLibre = await api(`/solicitudes/${idLibre}`, { token: tokenVendedor });
+  const partidaLibre = detLibre.data?.solicitud?.detalle?.find((d) => d.origen === 'LIBRE');
+
+  check('La partida queda marcada como capturada a mano', Boolean(partidaLibre));
+  check('Sin existencia inventada', Number(partidaLibre?.existencia_real_almacen) === 0);
+  check('Sin precio inventado', partidaLibre?.precio_estimado === null);
+  // Ésta es la regla que importa: aunque todo lo demás esté en existencia, una
+  // parte que nadie conoce tiene que ir a Compras antes de prometerle algo al cliente.
+  check('Manda la cotización a Compras aunque lo demás sí haya',
+    detLibre.data?.solicitud?.estatus_actual === 'Con Compras',
+    `(${detLibre.data?.solicitud?.estatus_actual})`);
+  check('Y aparece en la mesa de Compras como recién llegada',
+    detLibre.data?.solicitud?.estatus_compras === 'En Cotizacion',
+    `(${detLibre.data?.solicitud?.estatus_compras})`);
+
+  console.log('\n== Estatus del trabajo de Compras ==');
+
+  const parcial = await api(`/solicitudes/${idLibre}/compras`, {
+    metodo: 'PATCH', token: tokenComprador,
+    body: { estatus_compras: 'Cotizacion Parcial', comentario: 'Falta que conteste el proveedor' },
+  });
+  check('El comprador marca Cotización Parcial', parcial.status === 200,
+    `(${parcial.status} ${parcial.data?.error ?? ''})`);
+  check('El documento NO se movió de Con Compras',
+    parcial.data?.solicitud?.estatus_actual === 'Con Compras',
+    `(${parcial.data?.solicitud?.estatus_actual})`);
+  check('Queda en la bitácora aunque el estatus del documento no cambió',
+    parcial.data?.solicitud?.historial?.some((h) => /Compras:/.test(h.comentario ?? '')));
+
+  const inventado = await api(`/solicitudes/${idLibre}/compras`, {
+    metodo: 'PATCH', token: tokenComprador, body: { estatus_compras: 'Lo que sea' },
+  });
+  check('Un estatus inventado se rechaza', inventado.status === 400);
+
+  const vendedorNoPuede = await api(`/solicitudes/${idLibre}/compras`, {
+    metodo: 'PATCH', token: tokenVendedor, body: { estatus_compras: 'Completada' },
+  });
+  check('El vendedor no mueve el estatus de Compras -> 403', vendedorNoPuede.status === 403,
+    `(${vendedorNoPuede.status})`);
+
+  // Un botón que el servidor va a rechazar es peor que no tener el botón: la
+  // persona hace clic, ve un error rojo y aprende a desconfiar de la pantalla.
+  const vistaComprador = await api(`/solicitudes/${idLibre}`, { token: tokenComprador });
+  const vistaVendedor  = await api(`/solicitudes/${idLibre}`, { token: tokenVendedor });
+  check('Al comprador NO se le ofrece "Enviar al cliente"',
+    vistaComprador.data?.acciones?.puede_enviar === false);
+  check('Al vendedor dueño SÍ se le ofrece',
+    vistaVendedor.data?.acciones?.puede_enviar === true);
+
+  console.log('\n== El comprador pone el precio ==');
+
+  const conPrecios = await api(`/solicitudes/${idLibre}`, {
+    metodo: 'PATCH', token: tokenComprador,
+    body: {
+      items: [
+        // Una parte que Quiter SÍ tiene, pero que el comprador consiguió más
+        // barata por otro lado. Éste es el caso delicado: existe en el catálogo,
+        // así que el refresco de precios pasa por encima de ella cada hora.
+        { sku_producto: REAL.sku, descripcion: REAL.descripcion, cantidad_solicitada: 1,
+          existencia_real_almacen: REAL.existencia, precio_estimado: PRECIO_REAL,
+          precio_cotizado: NEGOCIADO, precio_origen: 'COMPRADOR',
+          nota_compras: 'Mejor precio con proveedor local' },
+        { sku_producto: 'XYZ-NO-EXISTE-9', descripcion: 'Bomba hidráulica Cummins',
+          cantidad_solicitada: 2, origen: 'LIBRE',
+          precio_cotizado: 4500, precio_origen: 'COMPRADOR',
+          nota_compras: 'Con Distribuidora del Bajío, 3 días' },
+      ],
+      comentario: 'Ya conseguí la bomba.',
+    },
+  });
+  check('El comprador captura precios', conPrecios.status === 200,
+    `(${conPrecios.status} ${conPrecios.data?.error ?? ''})`);
+
+  const totales = conPrecios.data?.solicitud?.totales;
+  const esperado = Math.round((NEGOCIADO * 1 + 4500 * 2) * 100) / 100;
+  check('Suma el total de todas las piezas', Number(totales?.importe) === esperado,
+    `(${totales?.importe}, esperado ${esperado})`);
+  check('Cuenta las piezas, no las partidas', Number(totales?.piezas) === 3, `(${totales?.piezas})`);
+  check('Sabe que ya no falta ningún precio', totales?.completo === true);
+
+  const bomba = conPrecios.data?.solicitud?.detalle?.find((d) => d.origen === 'LIBRE');
+  check('Marca que el precio lo puso el comprador', bomba?.precio_origen === 'COMPRADOR');
+  check('Guarda con quién la consiguió', /Bajío/.test(bomba?.nota_compras ?? ''));
+
+  const negociada = conPrecios.data?.solicitud?.detalle
+    ?.find((d) => d.sku_producto === REAL.sku);
+  check('Respeta el precio negociado de una parte que sí está en Quiter',
+    Number(negociada?.precio_cotizado) === NEGOCIADO,
+    `(${negociada?.precio_cotizado}, lista ${PRECIO_REAL})`);
+
+  const intentoVendedor = await api(`/solicitudes/${idLibre}`, {
+    metodo: 'PATCH', token: tokenVendedor,
+    body: {
+      items: [{ sku_producto: 'XYZ-NO-EXISTE-9', descripcion: 'Bomba', cantidad_solicitada: 2,
+                origen: 'LIBRE', precio_cotizado: 100, precio_origen: 'COMPRADOR' }],
+    },
+  });
+  check('El vendedor no puede ponerse precios de compra -> 403', intentoVendedor.status === 403,
+    `(${intentoVendedor.status})`);
+
+  // Ésta es LA prueba de este bloque. El comprador se pasa media mañana
+  // consiguiendo un precio; el vigía pasa cada hora refrescando precios contra
+  // Quiter. Si el segundo le pisa el trabajo al primero, la cotización sale con
+  // un precio que nadie negoció y NADIE SE ENTERA: no hay error, no hay aviso,
+  // solo un número distinto. Por eso se prueba explícitamente.
+  console.log('\n== El vigía no le pisa el precio al comprador ==');
+
+  const antesDelVigia = await api(`/solicitudes/${idLibre}`, { token: tokenComprador });
+  // Se sigue la partida que EXISTE en Quiter y trae precio negociado. Seguir la
+  // capturada a mano no serviría: a ésa el vigía ni siquiera le pregunta precio,
+  // así que estaría a salvo por accidente y la prueba pasaría con el error puesto.
+  const negociadaAntes = antesDelVigia.data?.solicitud?.detalle
+    ?.find((d) => d.origen === 'QUITER' && d.precio_origen === 'COMPRADOR');
+  check('Hay una partida de catálogo con precio negociado que vigilar',
+    Boolean(negociadaAntes), negociadaAntes ? `(${negociadaAntes.sku_producto})` : '');
+
+  // Se dispara el refresco por el mismo endpoint que usa la pantalla y que el
+  // vigía llama cada hora. Llamar al vigía completo aquí NO serviría: sin ERP
+  // configurado se salta la tarea de precios entera y la prueba pasaría en
+  // verde sin haber ejecutado ni una línea de lo que dice probar.
+  const refrescoVigia = await api(`/solicitudes/${idLibre}/precios`, {
+    metodo: 'POST', token: tokenComprador,
+  });
+  check('El refresco de precios corre', refrescoVigia.status === 200, `(${refrescoVigia.status})`);
+
+  const despues = await api(`/solicitudes/${idLibre}`, { token: tokenComprador });
+  const negociadaDespues = despues.data?.solicitud?.detalle
+    ?.find((d) => d.sku_producto === negociadaAntes?.sku_producto);
+
+  check('El precio negociado sigue intacto después de la vuelta del vigía',
+    Number(negociadaDespues?.precio_cotizado) === Number(negociadaAntes?.precio_cotizado),
+    `(antes ${negociadaAntes?.precio_cotizado}, después ${negociadaDespues?.precio_cotizado})`);
+
+  check('Y se sigue reconociendo como puesto por el comprador',
+    negociadaDespues?.precio_origen === 'COMPRADOR');
+
+  // Que no se pise el compromiso no significa dejar de mirar a Quiter: el
+  // precio de lista se sigue guardando aparte, que es lo que deja comparar.
+  check('Pero sí se sigue guardando lo que dice Quiter hoy, para poder comparar',
+    negociadaDespues?.precio_lista_actual !== null,
+    `(lista ${negociadaDespues?.precio_lista_actual} vs negociado ${negociadaDespues?.precio_cotizado})`);
+
+  console.log('\n== Rango de fechas de entrega ==');
+
+  const rango = await api(`/solicitudes/${idLibre}`, {
+    metodo: 'PATCH', token: tokenComprador,
+    body: { fecha_promesa_entrega: '2026-08-30', fecha_promesa_hasta: '2026-09-02' },
+  });
+  check('Acepta un rango de entrega', rango.status === 200, `(${rango.status})`);
+  check('Guarda el desde', rango.data?.solicitud?.fecha_promesa_entrega === '2026-08-30',
+    `(${rango.data?.solicitud?.fecha_promesa_entrega})`);
+  check('Guarda el hasta', rango.data?.solicitud?.fecha_promesa_hasta === '2026-09-02',
+    `(${rango.data?.solicitud?.fecha_promesa_hasta})`);
+
+  const alReves = await api(`/solicitudes/${idLibre}`, {
+    metodo: 'PATCH', token: tokenComprador,
+    body: { fecha_promesa_entrega: '2026-09-10', fecha_promesa_hasta: '2026-09-01' },
+  });
+  check('Un rango al revés se rechaza con un mensaje entendible',
+    alReves.status === 400 && /anterior/.test(alReves.data?.error ?? ''),
+    `(${alReves.status} ${alReves.data?.error ?? ''})`);
+
+  console.log('\n== Recotizar sin perder el folio ==');
+
+  // Compras terminó; el vendedor la manda al cliente.
+  await api(`/solicitudes/${idLibre}/compras`, {
+    metodo: 'PATCH', token: tokenComprador, body: { estatus_compras: 'Completada' },
+  });
+  const envioLibre = await api(`/solicitudes/${idLibre}/enviar`, {
+    metodo: 'POST', token: tokenVendedor,
+  });
+  check('Se envía al cliente', envioLibre.status === 200,
+    `(${envioLibre.status} ${envioLibre.data?.error ?? ''})`);
+
+  const antesDeRecotizar = await api(`/solicitudes/${idLibre}`, { token: tokenVendedor });
+  const folioOriginal = antesDeRecotizar.data?.solicitud?.folio;
+  check('Va en versión 1', Number(antesDeRecotizar.data?.solicitud?.version) === 1);
+
+  const recotizada = await api(`/solicitudes/${idLibre}`, {
+    metodo: 'PATCH', token: tokenComprador,
+    body: {
+      items: [
+        { sku_producto: 'XYZ-NO-EXISTE-9', descripcion: 'Bomba hidráulica Cummins',
+          cantidad_solicitada: 2, origen: 'LIBRE',
+          precio_cotizado: 5200, precio_origen: 'COMPRADOR' },
+      ],
+      comentario: 'El proveedor subió el precio.',
+    },
+  });
+  check('Se puede recotizar una cotización ya enviada', recotizada.status === 200,
+    `(${recotizada.status} ${recotizada.data?.error ?? ''})`);
+  check('EL FOLIO NO CAMBIA', recotizada.data?.solicitud?.folio === folioOriginal,
+    `(${recotizada.data?.solicitud?.folio})`);
+  check('Sube a versión 2', Number(recotizada.data?.solicitud?.version) === 2,
+    `(${recotizada.data?.solicitud?.version})`);
+  // Esto es lo que evita que el cliente ande con un papel que ya no vale y
+  // nadie se entere.
+  check('Deja de estar Enviada: hay que volver a mandarla',
+    recotizada.data?.solicitud?.estatus_actual !== 'Enviada',
+    `(${recotizada.data?.solicitud?.estatus_actual})`);
+  check('Se reinicia el reloj de vencimiento',
+    recotizada.data?.solicitud?.vence_en === null);
+  check('El aviso lo dice con todas sus letras',
+    /versión 2/i.test(recotizada.data?.aviso ?? ''), `(${recotizada.data?.aviso})`);
+  check('La bitácora conserva todo el recorrido',
+    (recotizada.data?.solicitud?.historial?.length ?? 0) >= 6,
+    `(${recotizada.data?.solicitud?.historial?.length} movimientos)`);
+
+
+  console.log('\n== Un pedido no se edita ==');
+
+  const pedidoExistente = await api('/solicitudes?tipo=Pedido', { token: tokenComprador });
+  const idPedido = pedidoExistente.data?.solicitudes?.[0]?.id;
+  if (idPedido) {
+    const intentoPedido = await api(`/solicitudes/${idPedido}`, {
+      metodo: 'PATCH', token: tokenComprador,
+      body: { observaciones: 'no debería dejarme' },
+    });
+    check('Editar un pedido se rechaza con explicación',
+      intentoPedido.status === 409 && /cancél/i.test(intentoPedido.data?.error ?? ''),
+      `(${intentoPedido.status} ${intentoPedido.data?.error ?? ''})`);
+  } else {
+    check('Editar un pedido se rechaza con explicación', false, '(no había pedidos que probar)');
+  }
 
   console.log('\n== Catálogos ==');
   const suc = await api('/catalogos/sucursales', { token: tokenVendedor });

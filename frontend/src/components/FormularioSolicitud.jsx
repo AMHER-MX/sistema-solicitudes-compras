@@ -43,6 +43,9 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
           cantidad_solicitada: Number(it.cantidad),
           precio_estimado: it.precio_lista ?? null,
           existencia_real_almacen: it.existencia,
+          // El servidor no vuelve a preguntarle a Quiter por una partida LIBRE
+          // ni le inventa existencia: la marca es lo que se lo dice.
+          origen: it.origen ?? 'QUITER',
         })),
       });
       // Limpiamos el formulario y avisamos al padre para refrescar el listado.
@@ -90,6 +93,11 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
                   <td className="px-3 py-2">
                     <p className="font-medium text-ink tabular">{it.sku}</p>
                     <p className="text-xs text-ink-2">{it.descripcion}</p>
+                    {it.origen === 'LIBRE' && (
+                      <p className="mt-0.5 text-[11px] text-warning">
+                        Fuera de catálogo · Compras consigue precio y tiempo
+                      </p>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-right text-xs tabular">
                     {Number(it.existencia) <= 0

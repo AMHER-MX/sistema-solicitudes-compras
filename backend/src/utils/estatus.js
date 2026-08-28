@@ -40,6 +40,41 @@ export const ESTATUS = {
   RECHAZADA:     'Rechazada',
 };
 
+/**
+ * Cómo va el trabajo de Compras SOBRE una cotización.
+ *
+ * Es un eje aparte de `ESTATUS`, y la diferencia importa:
+ *
+ *   ESTATUS          dónde va el documento      -> lo lee el vendedor y el cliente
+ *   ESTATUS_COMPRAS  cómo va el trabajo interno -> lo lleva el comprador
+ *
+ * Un mismo folio puede estar 'Con Compras' (para el vendedor) y 'Cotizacion
+ * Parcial' (para el comprador) al mismo tiempo, y las dos frases son ciertas.
+ * Fundirlas en una sola columna obligaría al vendedor a aprenderse el
+ * vocabulario de Compras para saber si ya puede mandarle algo a su cliente.
+ */
+export const ESTATUS_COMPRAS = {
+  EN_COTIZACION: 'En Cotizacion',      // pidiendo precios a proveedores
+  PARCIAL:       'Cotizacion Parcial', // consiguió unas partidas, otras no
+  COMPLETADA:    'Completada',         // todo tiene precio y tiempo de entrega
+  CANCELADA:     'Cancelada',          // no se consigue; el vendedor decide qué hacer
+};
+
+export const ESTATUS_COMPRAS_VALIDOS = Object.values(ESTATUS_COMPRAS);
+
+/**
+ * Compras puede moverse libremente entre sus cuatro estados.
+ *
+ * A diferencia del documento, aquí NO hay máquina de estados con transiciones
+ * prohibidas, y es a propósito: conseguir precios no es un proceso lineal. Un
+ * proveedor cancela y hay que volver a cotizar; llega un precio que faltaba y
+ * lo Parcial se vuelve Completada. Ponerle candados a eso solo lograría que el
+ * comprador dejara el estatus en el primero que le tocó y lo administrara por
+ * WhatsApp, que es exactamente lo que este sistema vino a quitar.
+ */
+export const esEstatusComprasValido = (e) =>
+  e === null || e === undefined || ESTATUS_COMPRAS_VALIDOS.includes(e);
+
 export const PRIORIDADES = ['Urgente', 'Normal', 'Baja'];
 
 export const ROLES = {
@@ -136,6 +171,51 @@ export function puedeConvertirlo(usuario, documento) {
 }
 
 /**
+ * ¿Se puede editar / recotizar este documento?
+ *
+ * Sí mientras sea una Cotización que todavía no se volvió Pedido. Incluidas la
+ * Enviada y la Vencida: recotizar es precisamente lo que se hace con ellas.
+ *
+ * Un Pedido NO: ahí ya hay una orden de compra puesta con un proveedor, y
+ * cambiarle las partidas por debajo dejaría el papel y el sistema diciendo
+ * cosas distintas. Si un pedido cambia, se cancela y se levanta otro.
+ */
+export const puedeEditarse = (documento) =>
+  documento?.tipo === TIPOS.COTIZACION
+  && documento?.estatus_actual !== ESTATUS.CANCELADA;
+
+/**
+ * ¿Editar este documento obliga a recotizar (subir de versión)?
+ *
+ * Solo si el cliente ya lo vio. Corregir un borrador que nadie ha mirado no es
+ * una recotización, es seguir capturando; contarlo como versión 2 llenaría la
+ * bitácora de ruido y le quitaría significado al número justo cuando importa.
+ */
+export const requiereNuevaVersion = (documento) =>
+  [ESTATUS.ENVIADA, ESTATUS.VENCIDA].includes(documento?.estatus_actual);
+
+/**
+ * A dónde regresa una cotización cuando se recotiza.
+ *
+ * Vuelve a manos de quien tenga que trabajarla y —esto es lo importante— deja
+ * de estar Enviada: el reloj de vencimiento se reinicia cuando se vuelva a
+ * mandar, no antes. Si se quedara Enviada, el cliente tendría en la mano un
+ * papel que ya no coincide con el sistema y nadie se enteraría.
+ */
+export const estatusAlRecotizar = (hayPendientesDeCompras) =>
+  (hayPendientesDeCompras ? ESTATUS.CON_COMPRAS : ESTATUS.BORRADOR);
+
+/** ¿Quién puede tocar las partidas y los precios de este documento? */
+export function puedeEditarlo(usuario, documento) {
+  if (!usuario || !puedeEditarse(documento)) return false;
+  if (usuario.rol === ROLES.GERENTE)   return true;
+  // El comprador es quien consigue el precio: tiene que poder capturarlo.
+  if (usuario.rol === ROLES.COMPRADOR) return true;
+  // El vendedor, solo lo suyo.
+  return Number(documento?.id_vendedor) === Number(usuario.id);
+}
+
+/**
  * Estatus con el que arranca una cotización recién capturada.
  *
  * Si algo de lo que pide el cliente no hay en existencia, la cotización no se
@@ -144,3 +224,11 @@ export function puedeConvertirlo(usuario, documento) {
  */
 export const estatusInicialCotizacion = (hayFaltantes) =>
   (hayFaltantes ? ESTATUS.CON_COMPRAS : ESTATUS.BORRADOR);
+
+/**
+ * De la cotización a Vencida solo se sale recotizando, así que 'Vencida' ya no
+ * es del todo terminal: sigue sin admitir cambios de estatus, pero sí admite
+ * que alguien la reviva con una versión nueva. Se deja documentado aquí porque
+ * `ESTATUS_FINALES` se sigue usando para sellar la fecha de cierre y para el
+ * KPI de atención, y ahí Vencida sí cuenta como cerrada.
+ */

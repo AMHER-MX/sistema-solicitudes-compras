@@ -4,14 +4,25 @@
  * - Escribe -> espera 350 ms (debounce) -> GET /api/productos/existencias
  * - Si el artículo tiene 0 piezas, ofrece el botón "Solicitar a compras".
  * - Si otra sucursal sí tiene, lo indica (a veces conviene traspaso, no compra).
+ * - Si NO existe en el catálogo, deja capturarlo a mano.
+ *
+ * Lo último no es un adorno. Los clientes piden números de parte que Quiter no
+ * tiene —de otras marcas, de equipo viejo, de proveedores nuevos— y hasta ahora
+ * eso terminaba en WhatsApp o en una libreta, fuera del sistema y fuera de todo
+ * reporte. Dejar capturarla aquí, marcada como lo que es, la mete al mismo
+ * folio y al mismo seguimiento que las demás.
  */
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, PackageSearch, Plus, Search, Loader2 } from 'lucide-react';
 import { productosApi } from '../api/client.js';
 import { moneda, numero } from '../lib/constantes.js';
-import { Alerta, EstadoVacio, Input, Tarjeta, TarjetaEncabezado } from './ui/Primitivos.jsx';
+import {
+  Alerta, Boton, Campo, EstadoVacio, Input, Tarjeta, TarjetaEncabezado,
+} from './ui/Primitivos.jsx';
 
 export default function BuscadorExistencias({ onSolicitar }) {
+  // Captura de una parte que el catálogo no conoce.
+  const [libre, setLibre] = useState(null);
   const [termino, setTermino] = useState('');
   const [resultado, setResultado] = useState(null);
   const [buscando, setBuscando] = useState(false);
@@ -77,12 +88,95 @@ export default function BuscadorExistencias({ onSolicitar }) {
         {error && <div className="mt-3"><Alerta tipo="error">{error}</Alerta></div>}
 
         {/* Resultados */}
-        {resultado && resultado.articulos.length === 0 && (
-          <EstadoVacio
-            icono={PackageSearch}
-            titulo="Sin coincidencias"
-            descripcion={`No se encontró "${resultado.termino}" en el catálogo. Verifica el número de parte.`}
-          />
+        {resultado && resultado.articulos.length === 0 && !libre && (
+          <div className="mt-4">
+            <EstadoVacio
+              icono={PackageSearch}
+              titulo="No está en el catálogo"
+              descripcion={`Quiter no conoce "${resultado.termino}". Revisa que esté bien escrito — `
+                + 'y si el cliente lo pidió así, puedes capturarlo a mano para que Compras lo averigüe.'}
+            />
+            <div className="flex justify-center pb-2">
+              <Boton
+                variante="secundario"
+                icono={Plus}
+                onClick={() => setLibre({
+                  sku: resultado.termino.trim().toUpperCase(),
+                  descripcion: '',
+                  cantidad: 1,
+                })}
+              >
+                Capturarlo a mano
+              </Boton>
+            </div>
+          </div>
+        )}
+
+        {/* Alta de una parte fuera de catálogo. Se pide descripción a fuerza:
+            un número de parte suelto que nadie reconoce no le sirve de nada al
+            comprador que lo tiene que salir a buscar. */}
+        {libre && (
+          <div className="mt-4 space-y-3 rounded-lg bg-warning/8 p-3 ring-1 ring-inset ring-warning/40">
+            <p className="flex items-start gap-2 text-xs text-ink">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />
+              <span>
+                <strong className="font-medium">Esta parte no está en Quiter.</strong>{' '}
+                Va a entrar sin existencia ni precio, y la cotización pasará a Compras
+                para que averigüen si se consigue, a cómo y en cuánto tiempo.
+              </span>
+            </p>
+
+            <div className="grid gap-3 sm:grid-cols-[1fr_2fr_auto]">
+              <Campo etiqueta="Número de parte" requerido>
+                <Input
+                  value={libre.sku}
+                  onChange={(e) => setLibre({ ...libre, sku: e.target.value.toUpperCase() })}
+                  className="tabular"
+                />
+              </Campo>
+              <Campo etiqueta="Qué es" requerido hint="Sin esto, Compras no sabe qué buscar.">
+                <Input
+                  value={libre.descripcion}
+                  onChange={(e) => setLibre({ ...libre, descripcion: e.target.value })}
+                  placeholder="Ej. Bomba hidráulica Cummins ISX 15"
+                />
+              </Campo>
+              <Campo etiqueta="Cantidad" requerido>
+                <Input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={libre.cantidad}
+                  onChange={(e) => setLibre({ ...libre, cantidad: e.target.value })}
+                  className="w-24 text-right tabular"
+                />
+              </Campo>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Boton variante="fantasma" onClick={() => setLibre(null)}>Cancelar</Boton>
+              <Boton
+                variante="primario"
+                icono={Plus}
+                disabled={!libre.sku.trim() || libre.descripcion.trim().length < 3
+                          || !(Number(libre.cantidad) > 0)}
+                onClick={() => {
+                  onSolicitar({
+                    sku: libre.sku.trim(),
+                    descripcion: libre.descripcion.trim(),
+                    cantidad: Number(libre.cantidad),
+                    existencia: 0,
+                    precio_lista: null,
+                    origen: 'LIBRE',
+                  });
+                  setLibre(null);
+                  setTermino('');
+                }}
+              >
+                Agregar a la cotización
+              </Boton>
+            </div>
+          </div>
         )}
 
         {resultado?.articulos?.length > 0 && (

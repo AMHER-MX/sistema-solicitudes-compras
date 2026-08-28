@@ -26,6 +26,50 @@ export const ESTATUS = [...new Set([...ESTATUS_COTIZACION, ...ESTATUS_PEDIDO])];
 export const PRIORIDADES = ['Urgente', 'Normal', 'Baja'];
 
 /**
+ * Cómo va el trabajo de Compras SOBRE una cotización.
+ *
+ * Es un eje aparte del estatus del documento. Para el vendedor la cotización
+ * está "Con Compras"; para el comprador está "Cotización Parcial". Las dos
+ * frases son ciertas al mismo tiempo y describen cosas distintas.
+ */
+export const ESTATUS_COMPRAS = [
+  'En Cotizacion', 'Cotizacion Parcial', 'Completada', 'Cancelada',
+];
+
+export const NOMBRE_ESTATUS_COMPRAS = {
+  'En Cotizacion':      'En cotización',
+  'Cotizacion Parcial': 'Cotización parcial',
+  'Completada':         'Completada',
+  'Cancelada':          'Cancelada',
+};
+
+export const EXPLICACION_ESTATUS_COMPRAS = {
+  'En Cotizacion':      'Pidiendo precios a proveedores.',
+  'Cotizacion Parcial': 'Ya hay precio de algunas partidas; faltan otras.',
+  'Completada':         'Todas las partidas tienen precio y tiempo de entrega.',
+  'Cancelada':          'No se consigue. El vendedor decide qué hacer.',
+};
+
+export const ESTILO_ESTATUS_COMPRAS = {
+  'En Cotizacion':      { clases: 'bg-brand/10    text-ink ring-brand/40',    punto: 'bg-brand'    },
+  'Cotizacion Parcial': { clases: 'bg-warning/15  text-ink ring-warning/45',  punto: 'bg-warning'  },
+  'Completada':         { clases: 'bg-good/12    text-ink ring-good/45',    punto: 'bg-good'     },
+  'Cancelada':          { clases: 'bg-critical/12 text-ink ring-critical/45', punto: 'bg-critical' },
+};
+
+/**
+ * El rango de entrega, dicho como lo diría una persona.
+ *
+ * "Del 30 de ago al 2 de sep" si hay rango; la fecha sola si el proveedor se
+ * comprometió a un día exacto; un guion si todavía no hay nada prometido.
+ */
+export function rangoEntrega(desde, hasta) {
+  if (!desde && !hasta) return '—';
+  if (!hasta || hasta === desde) return fecha(desde);
+  return `Del ${fecha(desde)} al ${fecha(hasta)}`;
+}
+
+/**
  * Qué significa cada estatus, en una línea y en cristiano. Se muestra como
  * ayuda al pasar el cursor, porque "Con Compras" y "Con Proveedor" se parecen
  * lo suficiente como para confundirse.
@@ -154,6 +198,20 @@ export const vigencia = (dias) => {
  * Devuelve null si no hay con qué comparar o si no se movió.
  */
 export const cambioDePrecio = (partida) => {
+  // Un precio que capturó el comprador NO se compara contra el de lista.
+  //
+  // Él lo negoció justamente para que fuera distinto del de Quiter: avisar de
+  // esa diferencia sería gritarle al usuario por haber hecho bien su trabajo.
+  // Y si el aviso amarillo sale en casi todos los renglones, en dos semanas
+  // nadie lo mira — incluidos los que sí importan.
+  if (partida?.precio_origen === 'COMPRADOR') return null;
+
+  // Una partida que Quiter no conoce no tiene precio de lista contra el cual
+  // comparar. Sin esto, `Number(null)` da 0 y la pantalla anuncia que "bajó
+  // 100%", que es a la vez falso y alarmante.
+  if (partida?.origen === 'LIBRE') return null;
+  if (partida?.precio_lista_actual === null || partida?.precio_lista_actual === undefined) return null;
+
   const cotizado = Number(partida?.precio_cotizado);
   const actual   = Number(partida?.precio_lista_actual);
   if (!Number.isFinite(cotizado) || !Number.isFinite(actual) || cotizado === 0) return null;

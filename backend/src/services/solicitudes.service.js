@@ -10,8 +10,9 @@
  */
 import { query, queryUno, withTransaction } from '../config/db.js';
 import {
-  DIAS_VIGENCIA_DEFAULT, ESTATUS, ESTATUS_FINALES, TIPOS,
-  estatusInicialCotizacion, puedeConvertir, puedeConvertirlo,
+  DIAS_VIGENCIA_DEFAULT, ESTATUS, ESTATUS_COMPRAS, ESTATUS_FINALES, TIPOS,
+  esEstatusComprasValido, estatusAlRecotizar, estatusInicialCotizacion,
+  puedeConvertir, puedeConvertirlo, puedeEditarlo, requiereNuevaVersion,
 } from '../utils/estatus.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
 import { consultarExistencias, existenciaDeSku, precioConfiable } from './erp/index.js';
@@ -48,7 +49,14 @@ const SELECT_CABECERA = `
     s.estatus_actual,
     s.observaciones,
     s.fecha_creacion,
+    -- El rango de entrega. Las dos como texto y por la misma razón: son DATE,
+    -- y el driver las entrega como medianoche UTC; formatearlas en México
+    -- (UTC-6) mostraría el día ANTERIOR.
     TO_CHAR(s.fecha_promesa_entrega, 'YYYY-MM-DD') AS fecha_promesa_entrega,
+    TO_CHAR(s.fecha_promesa_hasta,   'YYYY-MM-DD') AS fecha_promesa_hasta,
+    s.estatus_compras,
+    s.estatus_compras_en,
+    s.version,
     s.fecha_cierre,
     s.id_comprador_asignado,
     s.actualizado_en,
@@ -93,21 +101,35 @@ export async function crearSolicitud(datos) {
   // Se hace ANTES de abrir la transacción para no mantener locks abiertos
   // mientras esperamos una llamada de red.
   const itemsConExistencia = await Promise.all(
-    items.map(async (it) => ({
-      ...it,
-      existencia_real_almacen:
-        it.existencia_real_almacen !== undefined && it.existencia_real_almacen !== null
-          ? Number(it.existencia_real_almacen)
-          : await existenciaDeSku(it.sku_producto, almacen_erp).catch(() => 0),
-    })),
+    items.map(async (it) => {
+      // Una partida LIBRE es un número de parte que el cliente pidió y que el
+      // inventario no conoce. No se le pregunta existencia al ERP —no la
+      // tiene— ni se le inventa un cero "consultado": se declara en cero
+      // porque efectivamente no hay ninguna.
+      if (it.origen === 'LIBRE') {
+        return { ...it, existencia_real_almacen: 0, precio_estimado: null };
+      }
+      return {
+        ...it,
+        origen: 'QUITER',
+        existencia_real_almacen:
+          it.existencia_real_almacen !== undefined && it.existencia_real_almacen !== null
+            ? Number(it.existencia_real_almacen)
+            : await existenciaDeSku(it.sku_producto, almacen_erp).catch(() => 0),
+      };
+    }),
   );
 
   // Todo nace como Cotización, y el estatus depende de una sola cosa: si algo
   // de lo que pidió el cliente no hay en existencia, Compras tiene que
   // conseguir precio y tiempo de entrega antes de que esto se pueda mandar.
   // Si todo hay, el vendedor no espera a nadie.
+  // Una partida que Quiter no conoce siempre manda la cotización a Compras,
+  // aunque todo lo demás esté en existencia: alguien tiene que averiguar si esa
+  // pieza se consigue, a cómo y en cuánto tiempo.
   const hayFaltantes = itemsConExistencia.some(
-    (it) => Number(it.existencia_real_almacen) < Number(it.cantidad_solicitada),
+    (it) => it.origen === 'LIBRE'
+         || Number(it.existencia_real_almacen) < Number(it.cantidad_solicitada),
   );
   const estatusInicial = estatusInicialCotizacion(hayFaltantes);
 
@@ -118,9 +140,13 @@ export async function crearSolicitud(datos) {
     const [cabecera] = await ejecutar(
       `INSERT INTO solicitudes_compras
          (tipo, id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual,
-          observaciones, dias_vigencia)
+          observaciones, dias_vigencia, estatus_compras, estatus_compras_en)
               VALUES (@tipo, @vendedor, @sucursal, @cliente::int, @prioridad, @estatus,
-                      @observaciones::text, @vigencia)
+                      @observaciones::text, @vigencia,
+                      -- Si nace con faltantes ya está en manos de Compras: se
+                      -- marca desde aquí para que la mesa no la vea "sin nadie".
+                      @estatusCompras::text,
+                      CASE WHEN @estatusCompras::text IS NULL THEN NULL ELSE NOW() END)
        RETURNING *`,
       {
         tipo: TIPOS.COTIZACION,
@@ -131,6 +157,7 @@ export async function crearSolicitud(datos) {
         estatus: estatusInicial,
         observaciones: observaciones,
         vigencia: Number(dias_vigencia) || DIAS_VIGENCIA_DEFAULT,
+        estatusCompras: hayFaltantes ? ESTATUS_COMPRAS.EN_COTIZACION : null,
       },
     );
 
@@ -144,9 +171,10 @@ export async function crearSolicitud(datos) {
         `INSERT INTO solicitudes_detalle
            (id_solicitud, sku_producto, descripcion, cantidad_solicitada,
             existencia_real_almacen, precio_estimado, precio_cotizado,
-            precio_lista_actual, precio_actualizado_en)
+            precio_lista_actual, precio_actualizado_en, origen)
                   VALUES (@solicitud, @sku, @descripcion, @cantidad, @existencia,
-                          @precio::numeric, @precio::numeric, @precio::numeric, NOW())
+                          @precio::numeric, @precio::numeric, @precio::numeric, NOW(),
+                          @origen)
          RETURNING *`,
         {
           solicitud: cabecera.id,
@@ -155,6 +183,7 @@ export async function crearSolicitud(datos) {
           cantidad: Number(it.cantidad_solicitada),
           existencia: Number(it.existencia_real_almacen),
           precio: it.precio_estimado ?? null,
+          origen: it.origen === 'LIBRE' ? 'LIBRE' : 'QUITER',
         },
       );
       detalle.push(fila);
@@ -239,14 +268,19 @@ export async function refrescarPrecios(id) {
   if (!cabecera) throw notFound(`No existe el documento ${id}`);
 
   const partidas = await query(
-    `SELECT id, sku_producto, descripcion, precio_cotizado, precio_lista_actual
+    `SELECT id, sku_producto, descripcion, precio_cotizado, precio_lista_actual,
+            precio_origen, origen
      FROM   solicitudes_detalle WHERE id_solicitud = @id ORDER BY id`,
     { id: Number(id) },
   );
   if (!partidas.length) return { partidas: 0, cambios: [] };
 
   const congelado = yaSeCongelo(cabecera);
-  const precios = await preciosDeHoy(partidas.map((p) => p.sku_producto));
+  // A Quiter no se le pregunta por partidas que no son suyas: una capturada a
+  // mano no está en su catálogo y la consulta solo gastaría una llamada.
+  const precios = await preciosDeHoy(
+    partidas.filter((p) => p.origen !== 'LIBRE').map((p) => p.sku_producto),
+  );
 
   const cambios = [];
   for (const partida of partidas) {
@@ -255,13 +289,23 @@ export async function refrescarPrecios(id) {
 
     const cotizado = partida.precio_cotizado === null ? null : Number(partida.precio_cotizado);
 
+    // Un precio que capturó el comprador NO se pisa. Nunca.
+    //
+    // Es el detalle más importante de todo este archivo. El comprador se pasa
+    // media mañana consiguiendo un precio con un proveedor; si el vigía —que
+    // pasa cada hora— se lo sustituye por el de lista de Quiter, ese trabajo se
+    // pierde en silencio y la cotización sale con un precio que nadie negoció.
+    // De él se refresca únicamente `precio_lista_actual`, que es referencia y
+    // no compromiso.
+    const loPusoElComprador = partida.precio_origen === 'COMPRADOR';
+
     await query(
-      congelado
-        // Ya enviada: solo la columna del precio vivo.
+      (congelado || loPusoElComprador)
+        // Ya enviada, o con precio negociado: solo la columna del precio vivo.
         ? `UPDATE solicitudes_detalle
               SET precio_lista_actual = @precio, precio_actualizado_en = NOW()
             WHERE id = @id`
-        // Todavía no enviada: se mueve también el precio de trabajo.
+        // Todavía no enviada y con precio de catálogo: se mueve el de trabajo.
         : `UPDATE solicitudes_detalle
               SET precio_lista_actual = @precio,
                   precio_estimado     = @precio,
@@ -270,6 +314,11 @@ export async function refrescarPrecios(id) {
             WHERE id = @id`,
       { precio: nuevo, id: partida.id },
     );
+
+    // Tampoco se reporta como "cambio de precio": que Quiter diga otra cosa que
+    // lo que el comprador negoció es justo lo esperado, no una alerta. Avisarlo
+    // llenaría la pantalla de amarillo hasta que nadie mirara ningún aviso.
+    if (loPusoElComprador) continue;
 
     if (cotizado !== null && Math.abs(nuevo - cotizado) >= 0.01) {
       cambios.push({
@@ -349,9 +398,13 @@ export async function enviarAlCliente({ id, id_usuario, dias_vigencia, confirmar
     // El precio vivo que se acaba de traer pasa a ser el precio prometido, y
     // a partir de este segundo las dos columnas viven vidas separadas.
     await ejecutar(
+      // Solo las partidas con precio de catálogo. La que trae precio del
+      // comprador ya tiene su compromiso puesto a mano y congelarla contra
+      // Quiter sería deshacer justo lo que se le pidió que hiciera.
       `UPDATE solicitudes_detalle
           SET precio_cotizado = COALESCE(precio_lista_actual, precio_cotizado, precio_estimado)
-        WHERE id_solicitud = @id`,
+        WHERE id_solicitud = @id
+          AND precio_origen = 'QUITER'`,
       { id: Number(id) },
     );
 
@@ -611,11 +664,21 @@ export async function listarSolicitudes(filtros = {}) {
            -- Cuántas partidas subieron de precio en Quiter desde que se cotizó.
            -- Con esto la lista puede pintar el aviso amarillo sin abrir el
            -- documento uno por uno.
+           -- Solo cuentan las partidas cuyo precio salió de Quiter. Si el
+           -- comprador negoció un precio a propósito, que Quiter diga otra cosa
+           -- no es una alza que avisar: es justo lo que se esperaba. Sin este
+           -- filtro el aviso amarillo saldría en casi todo y en dos semanas
+           -- nadie le haría caso a ninguno.
            COUNT(*) FILTER (
-             WHERE d.precio_lista_actual IS NOT NULL
+             WHERE d.precio_origen        = 'QUITER'
+               AND d.precio_lista_actual IS NOT NULL
                AND d.precio_cotizado     IS NOT NULL
                AND d.precio_lista_actual > d.precio_cotizado + 0.01
            ) AS partidas_con_alza,
+           -- Lo que le falta a Compras por resolver. Es lo que separa una
+           -- cotización lista para mandar de una que todavía no.
+           COUNT(*) FILTER (WHERE d.precio_cotizado IS NULL) AS partidas_sin_precio,
+           COUNT(*) FILTER (WHERE d.origen = 'LIBRE')        AS partidas_libres,
            -- Días transcurridos desde el alta (resalta las solicitudes añejas)
            ROUND((EXTRACT(EPOCH FROM (NOW() - s.fecha_creacion)) / 86400.0)::NUMERIC, 1) AS dias_abierta
     ${FROM_CABECERA}
@@ -624,6 +687,7 @@ export async function listarSolicitudes(filtros = {}) {
     GROUP BY s.id, s.folio, s.tipo, s.enviada_en, s.vence_en, s.convertida_en,
              s.dias_vigencia, s.id_vendedor, s.id_sucursal, s.id_cliente, s.prioridad,
              s.estatus_actual, s.observaciones, s.fecha_creacion, s.fecha_promesa_entrega,
+             s.fecha_promesa_hasta, s.estatus_compras, s.estatus_compras_en, s.version,
              s.fecha_cierre, s.id_comprador_asignado, s.actualizado_en,
              u.nombre, su.nombre, su.clave, c.nombre, comp.nombre
     ORDER BY -- Urgente primero, luego lo más viejo arriba
@@ -644,8 +708,14 @@ export async function obtenerSolicitud(id) {
 
   const [detalle, historial] = await Promise.all([
     query(
-      `SELECT * FROM solicitudes_detalle
-       WHERE id_solicitud = @id ORDER BY id`,
+      // El importe por partida se calcula aquí y no en el navegador: es el
+      // número que la gente copia a un correo, y dos pantallas redondeando por
+      // su cuenta acabarían mostrando totales que no cuadran por centavos.
+      `SELECT *,
+              ROUND(cantidad_solicitada * COALESCE(precio_cotizado, precio_estimado, 0), 2)
+                AS importe
+       FROM   solicitudes_detalle
+       WHERE  id_solicitud = @id ORDER BY id`,
       { id: Number(id) },
     ),
     query(
@@ -658,7 +728,288 @@ export async function obtenerSolicitud(id) {
     ),
   ]);
 
-  return { ...cabecera, detalle, historial };
+  // Totales del documento. Van armados aquí para que el Excel, la pantalla y
+  // cualquier reporte digan exactamente lo mismo.
+  const totales = detalle.reduce((acc, d) => {
+    acc.piezas += Number(d.cantidad_solicitada);
+    acc.importe += Number(d.importe ?? 0);
+    if (d.precio_cotizado === null) acc.sin_precio += 1;
+    if (d.origen === 'LIBRE') acc.libres += 1;
+    return acc;
+  }, { partidas: detalle.length, piezas: 0, importe: 0, sin_precio: 0, libres: 0 });
+
+  totales.importe = Math.round(totales.importe * 100) / 100;
+  // Un total que suma partidas todavía sin cotizar no es el total: es una parte.
+  // Decirlo evita que alguien se lo mande al cliente creyendo que está completo.
+  totales.completo = totales.sin_precio === 0;
+
+  return { ...cabecera, detalle, historial, totales };
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EL TRABAJO DE COMPRAS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * El comprador dice cómo va su trabajo sobre una cotización.
+ *
+ * Es un eje aparte del estatus del documento: la cotización sigue estando 'Con
+ * Compras' para el vendedor mientras el comprador la mueve entre sus cuatro
+ * estados. Ver `ESTATUS_COMPRAS` para por qué son dos columnas y no una.
+ *
+ * Queda en la bitácora aunque el estatus del documento no cambie. Ese es medio
+ * el punto: hoy, cuando un comprador pasa dos días peleándose con un proveedor,
+ * eso no aparece en ningún lado y parece que el folio estuvo parado.
+ */
+export async function fijarEstatusCompras({ id, id_usuario, estatus_compras, comentario }) {
+  if (!esEstatusComprasValido(estatus_compras) || !estatus_compras) {
+    throw badRequest(`Estatus de compras no válido: ${estatus_compras}`);
+  }
+
+  return withTransaction(async (ejecutar) => {
+    const [actual] = await ejecutar(
+      `SELECT id, folio, tipo, estatus_actual, estatus_compras
+       FROM   solicitudes_compras WHERE id = @id FOR UPDATE`,
+      { id: Number(id) },
+    );
+    if (!actual) throw notFound(`No existe la solicitud ${id}`);
+
+    if (actual.tipo !== TIPOS.COTIZACION) {
+      throw conflict('El estatus de Compras es del proceso de cotizar. '
+                   + 'Un pedido se sigue con su propio estatus.');
+    }
+    if (actual.estatus_compras === estatus_compras) return Number(id);
+
+    await ejecutar(
+      `UPDATE solicitudes_compras
+          SET estatus_compras    = @nuevo,
+              estatus_compras_en = NOW(),
+              actualizado_en     = NOW()
+        WHERE id = @id`,
+      { nuevo: estatus_compras, id: Number(id) },
+    );
+
+    await ejecutar(
+      // El movimiento se anota SIN cambiar estatus_anterior/nuevo del
+      // documento: no se movió. Lo que cambió fue el trabajo de Compras, y eso
+      // se cuenta en el comentario para que la bitácora se lea como una
+      // historia y no como una lista de códigos.
+      `INSERT INTO solicitud_historial
+         (id_solicitud, id_usuario, estatus_anterior, estatus_nuevo, comentario)
+       VALUES (@solicitud, @usuario, @mismo, @mismo, @comentario)`,
+      {
+        solicitud: Number(id),
+        usuario: id_usuario,
+        mismo: actual.estatus_actual,
+        comentario: `Compras: ${actual.estatus_compras ?? 'sin marcar'} → ${estatus_compras}`
+                  + (comentario ? `. ${comentario}` : ''),
+      },
+    );
+
+    // Se devuelve el id, no el documento. Leerlo aquí dentro traería la versión
+    // ANTERIOR: `obtenerSolicitud` usa el pool, que es otra conexión, y lo que
+    // esta transacción acaba de escribir todavía no está confirmado. El síntoma
+    // sería de los feos —la pantalla mostrando el estado viejo justo después de
+    // guardar— y de los que se le achacan al navegador.
+    return Number(id);
+  }).then((idListo) => obtenerSolicitud(idListo));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EDITAR Y RECOTIZAR
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Edita una cotización: partidas, cantidades, precios, fechas, cliente.
+ *
+ * DOS COSAS QUE HACE Y CONVIENE ENTENDER
+ *
+ *  1. EL FOLIO NO CAMBIA. Nunca. Lo que sube es la versión, y solo si el
+ *     cliente ya había visto el documento. Corregir un borrador que nadie ha
+ *     mirado no es recotizar: es seguir capturando.
+ *
+ *  2. RECOTIZAR SACA EL DOCUMENTO DE 'Enviada'. Si el cliente tiene en la mano
+ *     un papel que ya no coincide con el sistema, el sistema tiene que decirlo.
+ *     El reloj de vencimiento se reinicia cuando se vuelva a mandar, no antes.
+ *
+ * Las partidas se reemplazan completas en vez de irse comparando una por una.
+ * Es más simple y no se pierde nada: la bitácora guarda qué versión era cuál, y
+ * lo que importa conservar —el folio, el historial, quién lo levantó— vive en
+ * el encabezado, que no se toca.
+ *
+ * @param {object} p
+ * @param {number} p.id
+ * @param {object} p.usuario       el que está editando (con su rol)
+ * @param {Array}  [p.items]       partidas nuevas; si no viene, no se tocan
+ * @param {object} [p.cambios]     { prioridad, observaciones, id_cliente,
+ *                                   fecha_promesa_entrega, fecha_promesa_hasta,
+ *                                   dias_vigencia }
+ * @param {string} [p.comentario]  por qué se recotiza
+ */
+export async function editarSolicitud({ id, usuario, items, cambios = {}, comentario }) {
+  if (items && (!Array.isArray(items) || items.length === 0)) {
+    throw badRequest('Una cotización sin partidas no existe. Si ya no va, cancélala.');
+  }
+  if (cambios.fecha_promesa_entrega && cambios.fecha_promesa_hasta
+      && String(cambios.fecha_promesa_hasta) < String(cambios.fecha_promesa_entrega)) {
+    throw badRequest('La fecha final de entrega no puede ser anterior a la inicial.');
+  }
+
+  return withTransaction(async (ejecutar) => {
+    const [doc] = await ejecutar(
+      `SELECT id, folio, tipo, estatus_actual, estatus_compras, version, id_vendedor
+       FROM   solicitudes_compras WHERE id = @id FOR UPDATE`,
+      { id: Number(id) },
+    );
+    if (!doc) throw notFound(`No existe la solicitud ${id}`);
+
+    if (doc.tipo !== TIPOS.COTIZACION) {
+      throw conflict('Un pedido ya tiene orden puesta con el proveedor y no se edita. '
+                   + 'Si cambió, cancélalo y levanta uno nuevo.');
+    }
+    if (doc.estatus_actual === ESTATUS.CANCELADA) {
+      throw conflict('Una cotización cancelada no se edita.');
+    }
+    if (!puedeEditarlo(usuario, doc)) {
+      throw forbidden('Solo el vendedor que la levantó, un comprador o el gerente '
+                    + 'pueden editar esta cotización.');
+    }
+
+    const recotiza = requiereNuevaVersion(doc);
+    const versionNueva = recotiza ? Number(doc.version) + 1 : Number(doc.version);
+
+    // ── Partidas ──────────────────────────────────────────────────────────
+    let hayPendientes = false;
+
+    if (items) {
+      await ejecutar('DELETE FROM solicitudes_detalle WHERE id_solicitud = @id', { id: Number(id) });
+
+      for (const it of items) {
+        const esLibre = it.origen === 'LIBRE';
+        const cantidad = Number(it.cantidad_solicitada);
+        if (!(cantidad > 0)) {
+          throw badRequest(`La cantidad de ${it.sku_producto} tiene que ser mayor que cero.`);
+        }
+
+        // Un precio capturado a mano es del comprador y así se marca: de eso
+        // depende que el aviso de "subió en Quiter" no le grite encima.
+        const loPusoElComprador = it.precio_origen === 'COMPRADOR'
+          || (it.precio_cotizado !== undefined && it.precio_cotizado !== null && esLibre);
+
+        const existencia = esLibre ? 0 : Number(it.existencia_real_almacen ?? 0);
+        const precioCotizado = it.precio_cotizado === undefined || it.precio_cotizado === ''
+          ? null
+          : Number(it.precio_cotizado);
+
+        if (precioCotizado === null || existencia < cantidad) hayPendientes = true;
+
+        await ejecutar(
+          `INSERT INTO solicitudes_detalle
+             (id_solicitud, sku_producto, descripcion, cantidad_solicitada,
+              existencia_real_almacen, precio_estimado, precio_cotizado,
+              precio_lista_actual, precio_actualizado_en,
+              origen, precio_origen, precio_puesto_por, precio_puesto_en, nota_compras)
+           VALUES (@solicitud, @sku, @descripcion, @cantidad, @existencia,
+                   @estimado::numeric, @cotizado::numeric,
+                   @lista::numeric, NOW(),
+                   @origen, @precioOrigen, @puestoPor::int, @puestoEn::timestamptz,
+                   @nota::text)`,
+          {
+            solicitud: Number(id),
+            sku: String(it.sku_producto ?? '').trim(),
+            descripcion: String(it.descripcion ?? '').trim(),
+            cantidad,
+            existencia,
+            estimado: it.precio_estimado ?? null,
+            cotizado: precioCotizado,
+            lista: esLibre ? null : (it.precio_lista_actual ?? it.precio_estimado ?? null),
+            origen: esLibre ? 'LIBRE' : 'QUITER',
+            precioOrigen: loPusoElComprador ? 'COMPRADOR' : 'QUITER',
+            // Quién y cuándo se deciden aquí y no con un CASE en el SQL: usar el
+            // mismo parámetro como valor de columna y dentro de una comparación
+            // hace que PostgreSQL le deduzca dos tipos distintos y rechace la
+            // consulta entera ("inconsistent types deduced for parameter").
+            puestoPor: loPusoElComprador ? usuario.id : null,
+            puestoEn: loPusoElComprador ? new Date() : null,
+            nota: it.nota_compras ?? null,
+          },
+        );
+      }
+    } else {
+      const [pend] = await ejecutar(
+        `SELECT COUNT(*) AS n FROM solicitudes_detalle
+         WHERE  id_solicitud = @id
+           AND (precio_cotizado IS NULL
+                OR existencia_real_almacen < cantidad_solicitada)`,
+        { id: Number(id) },
+      );
+      hayPendientes = Number(pend.n) > 0;
+    }
+
+    // ── Encabezado ────────────────────────────────────────────────────────
+    // Al recotizar el documento vuelve a manos de quien lo tenga que trabajar y
+    // se le limpian las fechas de envío: ya no es la que tiene el cliente.
+    const estatusNuevo = recotiza ? estatusAlRecotizar(hayPendientes) : doc.estatus_actual;
+
+    await ejecutar(
+      `UPDATE solicitudes_compras
+          SET prioridad             = COALESCE(@prioridad::text, prioridad),
+              observaciones         = COALESCE(@observaciones::text, observaciones),
+              id_cliente            = CASE WHEN @tocaCliente THEN @cliente::int ELSE id_cliente END,
+              fecha_promesa_entrega = COALESCE(@desde::date, fecha_promesa_entrega),
+              fecha_promesa_hasta   = COALESCE(@hasta::date, fecha_promesa_hasta),
+              dias_vigencia         = COALESCE(@vigencia::int, dias_vigencia),
+              version               = @version,
+              estatus_actual        = @estatus,
+              enviada_en            = CASE WHEN @recotiza THEN NULL ELSE enviada_en END,
+              vence_en              = CASE WHEN @recotiza THEN NULL ELSE vence_en   END,
+              -- @estatusCompras ya viene resuelto desde JavaScript por la misma
+              -- razón que arriba: comparar @estatus dentro de un CASE mientras
+              -- se usa como valor de columna rompe la deducción de tipos.
+              estatus_compras       = COALESCE(@estatusCompras::text, estatus_compras),
+              actualizado_en        = NOW()
+        WHERE id = @id`,
+      {
+        prioridad: cambios.prioridad ?? null,
+        observaciones: cambios.observaciones ?? null,
+        tocaCliente: Object.prototype.hasOwnProperty.call(cambios, 'id_cliente'),
+        cliente: cambios.id_cliente ?? null,
+        desde: cambios.fecha_promesa_entrega || null,
+        hasta: cambios.fecha_promesa_hasta || null,
+        vigencia: cambios.dias_vigencia ?? null,
+        version: versionNueva,
+        estatus: estatusNuevo,
+        recotiza,
+        // Si la recotización la manda de vuelta a Compras y nadie había marcado
+        // en qué va, arranca en 'En Cotizacion' para que no aparezca en la mesa
+        // como si nadie la estuviera trabajando.
+        estatusCompras: (estatusNuevo === ESTATUS.CON_COMPRAS && !doc.estatus_compras)
+          ? ESTATUS_COMPRAS.EN_COTIZACION
+          : null,
+        id: Number(id),
+      },
+    );
+
+    await ejecutar(
+      `INSERT INTO solicitud_historial
+         (id_solicitud, id_usuario, estatus_anterior, estatus_nuevo, comentario)
+       VALUES (@solicitud, @usuario, @anterior, @nuevo, @comentario)`,
+      {
+        solicitud: Number(id),
+        usuario: usuario.id,
+        anterior: doc.estatus_actual,
+        nuevo: estatusNuevo,
+        comentario: recotiza
+          ? `Recotizada. Versión ${versionNueva}: el cliente tenía la ${doc.version}, `
+            + `hay que volver a enviársela.${comentario ? ` ${comentario}` : ''}`
+          : `Cotización editada.${comentario ? ` ${comentario}` : ''}`,
+      },
+    );
+
+    // Fuera de la transacción, por lo mismo que en `fijarEstatusCompras`.
+    return Number(id);
+  }).then((idListo) => obtenerSolicitud(idListo));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -674,7 +1025,18 @@ export async function obtenerSolicitud(id) {
  * como válida, y el segundo pisaría al primero dejando el historial con un
  * movimiento que nunca ocurrió.
  */
-export async function cambiarEstatus({ id, id_usuario, estatus_nuevo, comentario, fecha_promesa_entrega, asignarme }) {
+export async function cambiarEstatus({
+  id, id_usuario, estatus_nuevo, comentario,
+  fecha_promesa_entrega, fecha_promesa_hasta, asignarme,
+}) {
+  // El rango tiene que venir en orden. Se revisa aquí, antes de abrir la
+  // transacción: el CHECK de la base también lo impide, pero un error de
+  // restricción es un mensaje que el vendedor no entiende.
+  if (fecha_promesa_entrega && fecha_promesa_hasta
+      && String(fecha_promesa_hasta) < String(fecha_promesa_entrega)) {
+    throw badRequest('La fecha final de entrega no puede ser anterior a la inicial.');
+  }
+
   return withTransaction(async (ejecutar) => {
     const [actual] = await ejecutar(
       `SELECT id, estatus_actual
@@ -695,6 +1057,7 @@ export async function cambiarEstatus({ id, id_usuario, estatus_nuevo, comentario
       `UPDATE solicitudes_compras
           SET estatus_actual        = @estatus,
               fecha_promesa_entrega = COALESCE(@promesa::date, fecha_promesa_entrega),
+              fecha_promesa_hasta   = COALESCE(@promesaHasta::date, fecha_promesa_hasta),
               fecha_cierre          = CASE WHEN @cierra THEN NOW() ELSE fecha_cierre END,
               id_comprador_asignado = CASE WHEN @asignar THEN @usuario ELSE id_comprador_asignado END,
               actualizado_en        = NOW()
@@ -702,10 +1065,13 @@ export async function cambiarEstatus({ id, id_usuario, estatus_nuevo, comentario
     RETURNING id, folio, id_vendedor, id_sucursal, id_cliente, prioridad,
               estatus_actual, observaciones, fecha_creacion,
               TO_CHAR(fecha_promesa_entrega, 'YYYY-MM-DD') AS fecha_promesa_entrega,
+              TO_CHAR(fecha_promesa_hasta,   'YYYY-MM-DD') AS fecha_promesa_hasta,
+              estatus_compras, version,
               fecha_cierre, id_comprador_asignado, actualizado_en`,
       {
         estatus: estatus_nuevo,
         promesa: fecha_promesa_entrega || null,
+        promesaHasta: fecha_promesa_hasta || null,
         cierra: cierra,
         asignar: Boolean(asignarme),
         usuario: id_usuario,

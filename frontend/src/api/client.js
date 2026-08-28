@@ -109,6 +109,16 @@ export const solicitudesApi = {
     api.patch(`/solicitudes/${id}/estatus`, payload).then((r) => r.data),
 
   /**
+   * Editar o recotizar. El folio nunca cambia; si el cliente ya la había visto,
+   * el servidor sube la versión y devuelve un aviso diciéndolo.
+   */
+  editar: (id, payload) => api.patch(`/solicitudes/${id}`, payload).then((r) => r.data),
+
+  /** Cómo va el trabajo de Compras. Eje aparte del estatus del documento. */
+  estatusCompras: (id, estatus_compras, comentario) =>
+    api.patch(`/solicitudes/${id}/compras`, { estatus_compras, comentario }).then((r) => r.data),
+
+  /**
    * Manda la cotización al cliente: congela el precio y arranca el plazo.
    *
    * Si el precio de Quiter cambió desde que se armó, el servidor responde 409
