@@ -131,6 +131,23 @@ export async function crearSolicitud(datos) {
     (it) => it.origen === 'LIBRE'
          || Number(it.existencia_real_almacen) < Number(it.cantidad_solicitada),
   );
+
+  // Sin un solo faltante, este documento no tiene nada que hacer aquí.
+  //
+  // Para el equipo, "urgencia" significa exactamente una cosa: no hay en piso.
+  // Lo que sí hay se vende en Quiter y se factura ahí. Si el sistema aceptara
+  // una cotización donde todo está disponible, el vendedor la capturaría dos
+  // veces —aquí y en Quiter— y en dos semanas dejaría de usar el sistema, con
+  // toda la razón. El documento mixto (unas en piso, otras no) sí se acepta:
+  // el cliente necesita ver el total completo, y las que faltan son el trabajo
+  // de Compras.
+  if (!hayFaltantes) {
+    throw badRequest(
+      'Todo lo que pediste hay en existencia: esta venta se levanta en Quiter, no aquí. '
+      + 'Este sistema es para lo que NO hay — si alguna partida falta, agrégala y se abre la cotización.',
+    );
+  }
+
   const estatusInicial = estatusInicialCotizacion(hayFaltantes);
 
   return withTransaction(async (ejecutar) => {

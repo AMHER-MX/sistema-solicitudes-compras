@@ -133,6 +133,11 @@ async function main() {
   // Se piden artículos reales. A propósito NO se manda existencia_real_almacen
   // en la primera partida: así se comprueba que el backend la selle
   // consultando al ERP por su cuenta.
+  //
+  // La cotización base es MIXTA —una partida en piso y una que falta— porque
+  // ése es el documento que de verdad levanta un vendedor: el cliente pidió
+  // cinco cosas, tres hay y dos no, y el papel tiene que traerlas todas. Un
+  // documento donde todo está en piso ya no se acepta (se prueba más abajo).
   const articuloPedido = conStock;
   const segundo = articulos.find((a) => a.sku !== articuloPedido.sku
     && Number(a.existencia) > 0) ?? articuloPedido;
@@ -150,6 +155,19 @@ async function main() {
         { sku_producto: segundo.sku, descripcion: segundo.descripcion,
           cantidad_solicitada: 1, precio_estimado: segundo.precio_lista ?? null,
           existencia_real_almacen: segundo.existencia },
+        // El faltante, que es la razón de ser del documento. Se usa un
+        // artículo REAL del catálogo —uno en cero, o pidiendo más de lo que
+        // hay— y no una partida capturada a mano: así trae precio de lista, y
+        // el resto de la prueba puede seguir ejercitando el envío al cliente,
+        // que exige que ninguna partida vaya sin precio.
+        sinStock
+          ? { sku_producto: sinStock.sku, descripcion: sinStock.descripcion,
+              cantidad_solicitada: 2, precio_estimado: sinStock.precio_lista ?? null,
+              existencia_real_almacen: 0 }
+          : { sku_producto: articuloPedido.sku, descripcion: articuloPedido.descripcion,
+              cantidad_solicitada: Number(articuloPedido.existencia) + 10,
+              precio_estimado: articuloPedido.precio_lista ?? null,
+              existencia_real_almacen: articuloPedido.existencia },
       ],
     },
   });
@@ -157,10 +175,10 @@ async function main() {
   const sol = creada.data?.solicitud;
   check('Se generó folio', /^SC-\d{4}-\d{6}$/.test(sol?.folio || ''), sol?.folio);
   check('Nace como Cotización', sol?.tipo === 'Cotizacion', `(${sol?.tipo})`);
-  // Todo lo pedido hay en existencia, así que no tiene que pasar por Compras.
-  check('Sin faltantes nace en Borrador', sol?.estatus_actual === 'Borrador',
+  // Con un faltante, nace en manos de Compras: alguien tiene que conseguirlo.
+  check('Con faltante nace con Compras', sol?.estatus_actual === 'Con Compras',
     `(${sol?.estatus_actual})`);
-  check('Guardó 2 partidas', sol?.detalle?.length === 2);
+  check('Guardó las 3 partidas, incluidas las que sí hay', sol?.detalle?.length === 3);
   check('Guardó el precio cotizado junto al estimado',
     sol?.detalle?.every((d) => d.precio_cotizado !== null));
 
@@ -281,7 +299,8 @@ async function main() {
   const trasConvertir = await api(`/solicitudes/${sol.id}`, { token: tokenComprador });
   const partidasPedido = trasConvertir.data?.solicitud?.detalle ?? [];
   check('Las partidas conservan su precio cotizado',
-    partidasPedido.length === 2 && partidasPedido.every((d) => d.precio_cotizado !== null));
+    partidasPedido.length === 3 && partidasPedido.every((d) => d.precio_cotizado !== null),
+    `(${partidasPedido.length} partidas)`);
 
   const refresco = await api(`/solicitudes/${sol.id}/precios`, {
     metodo: 'POST', token: tokenComprador,
@@ -353,11 +372,17 @@ async function main() {
     metodo: 'POST', token: tokenVendedor,
     body: {
       id_cliente: 1,
+      // Se piden más piezas de las que hay: así es un faltante y el documento
+      // se acepta. Una cotización donde todo está en piso ya no se crea.
       items: [{ sku_producto: articuloPedido.sku, descripcion: articuloPedido.descripcion,
-        cantidad_solicitada: 1, precio_estimado: articuloPedido.precio_lista ?? null,
+        cantidad_solicitada: Number(articuloPedido.existencia) + 3,
+        precio_estimado: articuloPedido.precio_lista ?? null,
         existencia_real_almacen: articuloPedido.existencia }],
     },
   });
+  check('Se pudo crear la cotización de la prueba del candado',
+    conPrecioViejo.status === 201,
+    `(${conPrecioViejo.status} ${conPrecioViejo.data?.error ?? ''})`);
   const idViejo = conPrecioViejo.data?.solicitud?.id;
 
   await query(
@@ -398,11 +423,16 @@ async function main() {
     metodo: 'POST', token: tokenVendedor,
     body: {
       id_cliente: 1,
+      // Igual que arriba: pidiendo más de lo que hay, para que sea un faltante
+      // y el documento exista.
       items: [{ sku_producto: articuloPedido.sku, descripcion: articuloPedido.descripcion,
-        cantidad_solicitada: 1, precio_estimado: articuloPedido.precio_lista ?? null,
+        cantidad_solicitada: Number(articuloPedido.existencia) + 3,
+        precio_estimado: articuloPedido.precio_lista ?? null,
         existencia_real_almacen: articuloPedido.existencia }],
     },
   });
+  check('Se pudo crear la cotización que se va a vencer', paraVencer.status === 201,
+    `(${paraVencer.status} ${paraVencer.data?.error ?? ''})`);
   const idVencer = paraVencer.data?.solicitud?.id;
   const folioVencer = paraVencer.data?.solicitud?.folio;
 
@@ -523,6 +553,66 @@ async function main() {
 
   // Los cinco cambios que pidieron los compradores. Cada bloque prueba la
   // regla que cuesta dinero si se rompe, no que el endpoint responda 200.
+
+  // El sistema existe para lo que NO hay. Una cotización donde todo está en
+  // piso haría que el vendedor capture dos veces —aquí y en Quiter— y es la
+  // forma más segura de que abandone la herramienta. Se rechaza de raíz.
+  console.log('\n== Una cotización sin faltantes no existe ==');
+
+  const todoEnPiso = await api('/solicitudes', {
+    metodo: 'POST', token: tokenVendedor,
+    body: {
+      id_sucursal: 1, prioridad: 'Normal', almacen_erp: '101',
+      items: [
+        { sku_producto: conStock.sku, descripcion: conStock.descripcion,
+          cantidad_solicitada: 1, existencia_real_almacen: conStock.existencia,
+          precio_estimado: conStock.precio_lista },
+      ],
+    },
+  });
+  check('Todo en piso -> 400, no se crea', todoEnPiso.status === 400, `(${todoEnPiso.status})`);
+  check('Y le dice a la persona dónde va esa venta',
+    /Quiter/i.test(todoEnPiso.data?.error ?? ''), `(${todoEnPiso.data?.error})`);
+
+  // Pedir MÁS de lo que hay sí es un faltante, aunque el artículo exista.
+  const pideDeMas = await api('/solicitudes', {
+    metodo: 'POST', token: tokenVendedor,
+    body: {
+      id_sucursal: 1, prioridad: 'Normal', almacen_erp: '101',
+      items: [
+        { sku_producto: conStock.sku, descripcion: conStock.descripcion,
+          cantidad_solicitada: Number(conStock.existencia) + 5,
+          existencia_real_almacen: conStock.existencia,
+          precio_estimado: conStock.precio_lista },
+      ],
+    },
+  });
+  check('Pedir más de lo que hay SÍ es faltante -> 201', pideDeMas.status === 201,
+    `(${pideDeMas.status} ${pideDeMas.data?.error ?? ''})`);
+
+  // El documento mixto es el caso normal y tiene que seguir funcionando: el
+  // cliente necesita ver el total completo, no solo lo que falta.
+  const mixta = await api('/solicitudes', {
+    metodo: 'POST', token: tokenVendedor,
+    body: {
+      id_sucursal: 1, prioridad: 'Normal', almacen_erp: '101',
+      items: [
+        { sku_producto: conStock.sku, descripcion: conStock.descripcion,
+          cantidad_solicitada: 1, existencia_real_almacen: conStock.existencia,
+          precio_estimado: conStock.precio_lista },
+        { sku_producto: 'PIEZA-QUE-NO-EXISTE-1', descripcion: 'Turbo reconstruido',
+          cantidad_solicitada: 1, origen: 'LIBRE' },
+      ],
+    },
+  });
+  check('Mixta (en piso + faltante) -> 201', mixta.status === 201,
+    `(${mixta.status} ${mixta.data?.error ?? ''})`);
+  check('La partida en piso se conserva en el documento',
+    mixta.data?.solicitud?.detalle?.length === 2);
+  check('Y nace con Compras, por el faltante',
+    mixta.data?.solicitud?.estatus_actual === 'Con Compras',
+    `(${mixta.data?.solicitud?.estatus_actual})`);
+
   console.log('\n== Partida que Quiter no conoce ==');
 
   // El artículo real se toma del ERP, no se escribe a mano: su precio de lista

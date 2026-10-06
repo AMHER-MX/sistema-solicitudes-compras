@@ -28,6 +28,20 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
     (acc, it) => acc + (Number(it.cantidad) || 0) * (Number(it.precio_lista) || 0), 0,
   );
 
+  /**
+   * ¿Hay al menos una partida que NO alcanza con lo que hay en piso?
+   *
+   * Es la condición para que este documento exista. El servidor también la
+   * exige, pero se revisa aquí para decirlo ANTES de que el vendedor llene
+   * cliente, prioridad y comentario — enterarse al final, con un error rojo,
+   * es la forma más rápida de que alguien deje de usar una herramienta.
+   */
+  const faltantes = items.filter(
+    (it) => it.origen === 'LIBRE'
+         || Number(it.existencia ?? 0) < Number(it.cantidad || 0),
+  );
+  const hayFaltantes = faltantes.length > 0;
+
   const enviar = async (e) => {
     e.preventDefault();
     setError('');
@@ -70,8 +84,10 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
       <TarjetaEncabezado
         icono={TriangleAlert}
         titulo="Nueva cotización"
-        descripcion={`${items.length} artículo(s). Si algo no hay en existencia, `
-          + 'pasa a Compras antes de poderse mandar al cliente.'}
+        descripcion={hayFaltantes
+          ? `${items.length} artículo(s), ${faltantes.length} sin existencia. `
+            + 'Compras consigue precio y tiempo de entrega de lo que falta.'
+          : `${items.length} artículo(s), todos en piso.`}
       />
 
       <form onSubmit={enviar} className="space-y-4 p-5">
@@ -167,13 +183,31 @@ export default function FormularioSolicitud({ items, setItems, onCreada }) {
           />
         </Campo>
 
+        {/* Todo en piso: no es un error del vendedor, es que esta venta va en
+            otro lado. Se dice así, sin regañar, y con la salida a la mano. */}
+        {!hayFaltantes && (
+          <Alerta tipo="aviso">
+            <strong className="font-medium">Todo esto hay en existencia.</strong>{' '}
+            Esta venta se levanta en Quiter y se factura ahí; capturarla aquí sería
+            hacerlo dos veces. Este sistema sigue lo que <strong className="font-medium">no</strong> hay.
+            {' '}Si el cliente también pidió algo que falta, agrégalo arriba y la
+            cotización se abre sola.
+          </Alerta>
+        )}
+
         {error && <Alerta tipo="error">{error}</Alerta>}
 
         <div className="flex items-center justify-end gap-2">
           <Boton variante="secundario" onClick={() => setItems([])} disabled={enviando}>
             Cancelar
           </Boton>
-          <Boton type="submit" icono={Send} cargando={enviando}>
+          <Boton
+            type="submit"
+            icono={Send}
+            cargando={enviando}
+            disabled={!hayFaltantes}
+            title={hayFaltantes ? undefined : 'Agrega al menos una partida que no haya en piso'}
+          >
             Crear cotización
           </Boton>
         </div>

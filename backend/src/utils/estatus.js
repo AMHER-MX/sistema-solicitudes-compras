@@ -220,7 +220,13 @@ export function puedeEditarlo(usuario, documento) {
  *
  * Si algo de lo que pide el cliente no hay en existencia, la cotización no se
  * puede mandar todavía: Compras tiene que conseguir precio y tiempo de entrega
- * de lo que falta. Si todo hay, el vendedor no espera a nadie.
+ * de lo que falta.
+ *
+ * EN LA PRÁCTICA, AL CREAR SIEMPRE HAY FALTANTES. El servicio rechaza una
+ * cotización donde todo está en piso, porque eso se vende en Quiter y
+ * capturarlo aquí sería trabajo doble. La rama `false` no está muerta, sin
+ * embargo: `estatusAlRecotizar` usa la misma idea para decidir a dónde vuelve
+ * una cotización que se recotiza, y ahí sí puede no quedar nada pendiente.
  */
 export const estatusInicialCotizacion = (hayFaltantes) =>
   (hayFaltantes ? ESTATUS.CON_COMPRAS : ESTATUS.BORRADOR);

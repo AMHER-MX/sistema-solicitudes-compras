@@ -19,6 +19,31 @@ No necesita estar dentro de la red: las existencias las lee por
 
 ---
 
+## 0. Para qué es este sistema (y para qué no)
+
+**Este sistema es para lo que NO hay en piso.** Nada más.
+
+Lo que sí hay en existencia se vende y se factura en Quiter, como siempre. Si
+el sistema aceptara también esas ventas, el vendedor capturaría dos veces la
+misma operación —aquí y en Quiter— y dejaría de usarlo en dos semanas, con toda
+la razón. Por eso **una cotización donde todas las partidas están en piso se
+rechaza**, y la pantalla dice a dónde va esa venta en lugar de dejar que alguien
+pierda el tiempo capturándola.
+
+El documento **mixto sí se acepta y es el caso normal**: el cliente pidió cinco
+cosas, tres hay y dos no. Las tres que hay van en la cotización para que el
+cliente vea su total completo; las dos que faltan son el trabajo de Compras.
+
+Esto salió del equipo, no del diseño: cuando se les preguntó dónde usarían la
+herramienta, contestaron *"solo en lo urgente, que es donde no tenemos
+control"* — y para ellos **urgente significa que no hay en existencia**.
+
+Una consecuencia que vale dinero: si todo lo que entra aquí es un faltante, el
+reporte de faltantes deja de ser un reporte y se vuelve **la lista de lo que
+Quiter debería tener en piso y no tiene**, con folios, clientes y fechas reales.
+
+---
+
 ## 1. Cómo se ve
 
 **Vista Vendedor** — busca la parte, ve la existencia del ERP y, si sale en cero,

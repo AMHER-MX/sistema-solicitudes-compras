@@ -179,6 +179,21 @@ export default function BuscadorExistencias({ onSolicitar }) {
           </div>
         )}
 
+        {/* Cuando TODO lo que salió está en piso, lo más útil que puede hacer
+            esta pantalla es quitarse de en medio y decir dónde se vende. */}
+        {resultado?.articulos?.length > 0
+          && resultado.articulos.every((a) => Number(a.existencia) > 0) && (
+          <p className="mt-4 flex items-start gap-2 rounded-lg bg-good/10 p-3 text-xs text-ink
+                        ring-1 ring-inset ring-good/40">
+            <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+            <span>
+              <strong className="font-medium">Todo esto hay en piso.</strong>{' '}
+              Esta venta se levanta en Quiter — aquí no hace falta capturar nada.
+              El sistema es para lo que <strong className="font-medium">no</strong> hay.
+            </span>
+          </p>
+        )}
+
         {resultado?.articulos?.length > 0 && (
           <ul className="mt-4 divide-y divide-hairline">
             {resultado.articulos.map((a) => {
@@ -225,14 +240,25 @@ export default function BuscadorExistencias({ onSolicitar }) {
                     </span>
                   </div>
 
-                  {/* Acción */}
+                  {/* Acción.
+                      Lo que SÍ hay en piso se vende en Quiter: el botón se
+                      queda, porque a veces una partida disponible va dentro de
+                      una cotización que además trae faltantes, pero deja de
+                      empujarse y dice a dónde pertenece. Ofrecerlo con el mismo
+                      énfasis que un faltante invitaría a capturar dos veces la
+                      misma venta —aquí y en Quiter—, que es lo que hace que la
+                      gente abandone una herramienta con toda la razón. */}
                   <button
                     onClick={() => onSolicitar(a)}
+                    title={sinStock
+                      ? 'Agrégalo a la cotización para que Compras lo consiga'
+                      : 'Hay en piso: esta venta va en Quiter. Agrégalo aquí solo si '
+                        + 'va dentro de una cotización que además trae faltantes.'}
                     className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium
                                 transition-colors
                                 ${sinStock
                                   ? 'bg-brand text-white hover:bg-brand-strong'
-                                  : 'text-ink-2 ring-1 ring-hairline hover:bg-surface-alt'}`}
+                                  : 'text-muted ring-1 ring-hairline hover:bg-surface-alt hover:text-ink-2'}`}
                   >
                     <Plus size={13} />
                     {sinStock ? 'Solicitar' : 'Agregar'}
