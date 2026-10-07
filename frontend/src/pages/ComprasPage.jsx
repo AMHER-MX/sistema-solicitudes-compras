@@ -14,6 +14,7 @@ import {
 } from '../components/ui/Primitivos.jsx';
 import { catalogosApi, solicitudesApi } from '../api/client.js';
 import BotonExcel from '../components/BotonExcel.jsx';
+import SelectorEmpresa, { useEmpresas } from '../components/SelectorEmpresa.jsx';
 import PestanasTipo from '../components/PestanasTipo.jsx';
 import {
   ESTATUS_COTIZACION, ESTATUS_PEDIDO, ESTATUS_FINALES, ESTILO_ESTATUS,
@@ -54,9 +55,11 @@ export default function ComprasPage() {
   const [prioridad, setPrioridad] = useState('');
   const [estatus, setEstatus] = useState('');
   const [sucursal, setSucursal] = useState('');
+  const [empresa, setEmpresa] = useState('');
   const [busqueda, setBusqueda] = useState('');
 
   const [sucursales, setSucursales] = useState([]);
+  const { empresas, veTodas } = useEmpresas();
   const [solicitudes, setSolicitudes] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
@@ -64,9 +67,14 @@ export default function ComprasPage() {
   const [enSeguimiento, setEnSeguimiento] = useState(null);
   const [detalleId, setDetalleId] = useState(null);
 
+  // Las sucursales siguen a la empresa elegida: filtrar por CADUSA y seguir
+  // ofreciendo las sucursales de CATOSA daría una tabla siempre vacía.
   useEffect(() => {
-    catalogosApi.sucursales().then((d) => setSucursales(d.sucursales)).catch(() => {});
-  }, []);
+    setSucursal('');
+    catalogosApi.sucursales({ empresa: empresa || undefined })
+      .then((d) => setSucursales(d.sucursales))
+      .catch(() => {});
+  }, [empresa]);
 
   const vistas = VISTAS_POR_TIPO[tipo];
 
@@ -78,10 +86,11 @@ export default function ComprasPage() {
       estatus: estatus || porVista || undefined,
       prioridad: prioridad || undefined,
       sucursal: sucursal || undefined,
+      empresa: empresa || undefined,
       busqueda: busqueda.trim() || undefined,
       limite: 200,
     };
-  }, [tipo, vistas, vistaRapida, estatus, prioridad, sucursal, busqueda]);
+  }, [tipo, vistas, vistaRapida, estatus, prioridad, sucursal, empresa, busqueda]);
 
   const cargar = useCallback(async () => {
     setCargando(true);
@@ -151,7 +160,7 @@ export default function ComprasPage() {
             ))}
           </div>
 
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <div className={`grid gap-2 sm:grid-cols-2 ${veTodas ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
             <div className="relative">
               <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
               <Input
@@ -173,6 +182,13 @@ export default function ComprasPage() {
                   <option key={e} value={e} title={EXPLICACION_ESTATUS[e]}>{e}</option>
                 ))}
             </Select>
+            <SelectorEmpresa
+              valor={empresa}
+              onChange={setEmpresa}
+              empresas={empresas}
+              veTodas={veTodas}
+              className=""
+            />
             <Select value={sucursal} onChange={(e) => setSucursal(e.target.value)} aria-label="Filtrar por sucursal">
               <option value="">Todas las sucursales</option>
               {sucursales.map((s) => <option key={s.id} value={s.id}>{s.nombre}</option>)}

@@ -15,7 +15,8 @@
  */
 import bcrypt from 'bcryptjs';
 import { query, queryUno } from '../config/db.js';
-import { badRequest, conflict, notFound } from '../utils/errors.js';
+import { ALCANCE_EMPRESA, esAlcanceValido, puedeConEmpresa, veTodasLasEmpresas } from '../utils/empresas.js';
+import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
 import { ROLES } from '../utils/estatus.js';
 import { generarPasswordTemporal, revisarPassword } from '../utils/password.js';
 
@@ -35,6 +36,10 @@ const SELECT_USUARIO = `
     u.email,
     u.rol,
     u.sucursal_id,
+    u.id_empresa,
+    u.alcance,
+    emp.clave  AS empresa_clave,
+    emp.nombre AS empresa_nombre,
     u.activo,
     u.debe_cambiar_password,
     u.ultimo_acceso,
@@ -48,6 +53,7 @@ const SELECT_USUARIO = `
 const FROM_USUARIO = `
   FROM      usuarios u
   LEFT JOIN sucursales su   ON su.id    = u.sucursal_id
+  LEFT JOIN empresas   emp  ON emp.id   = u.id_empresa
   LEFT JOIN usuarios   quien ON quien.id = u.creado_por`;
 
 /** Normaliza el correo: sin espacios y en minúsculas, siempre. */
@@ -61,7 +67,7 @@ const normalizarEmail = (email) => String(email ?? '').trim().toLowerCase();
  * Lista de usuarios para la pantalla de administración.
  * @param {{ q?: string, rol?: string, activo?: boolean }} filtros
  */
-export async function listarUsuarios({ q = '', rol = '', activo } = {}) {
+export async function listarUsuarios({ q = '', rol = '', activo, id_empresa } = {}) {
   const texto = String(q).trim();
 
   return query(
@@ -70,8 +76,12 @@ export async function listarUsuarios({ q = '', rol = '', activo } = {}) {
      WHERE (@q   = '' OR u.nombre ILIKE @patron OR u.email ILIKE @patron)
        AND (@rol = '' OR u.rol = @rol)
        AND (@activo::boolean IS NULL OR u.activo = @activo::boolean)
-     ORDER BY u.activo DESC, u.rol, u.nombre`,
+       -- Un Gerente de empresa administra a su gente y nada más. El filtro lo
+       -- calcula el controlador: a él le imponen la suya, al de grupo no.
+       AND (@empresa::int IS NULL OR u.id_empresa = @empresa::int)
+     ORDER BY emp.clave, u.activo DESC, u.rol, u.nombre`,
     {
+      empresa: id_empresa ?? null,
       q: texto,
       patron: `%${texto}%`,
       rol: String(rol).trim(),
@@ -119,10 +129,16 @@ async function contarGerentesActivos(excluirId = null) {
  * @param {{ nombre: string, email: string, rol: string, sucursal_id?: number|null }} datos
  * @param {number} creadoPor  id del Gerente que la está creando
  */
-export async function crearUsuario(datos, creadoPor) {
+export async function crearUsuario(datos, creadoPor, actor = null) {
   const nombre = String(datos?.nombre ?? '').trim();
   const email = normalizarEmail(datos?.email);
   const rol = String(datos?.rol ?? '').trim();
+  // Si no se dice la empresa, se hereda la de quien lo está creando: es lo que
+  // pasa el 99% de las veces y evita un campo más que llenar.
+  const idEmpresa = datos?.id_empresa == null || datos?.id_empresa === ''
+    ? (actor?.id_empresa ?? null)
+    : Number(datos.id_empresa);
+  const alcance = String(datos?.alcance ?? ALCANCE_EMPRESA).trim();
   const sucursalId = datos?.sucursal_id === '' || datos?.sucursal_id == null
     ? null
     : Number(datos.sucursal_id);
@@ -141,7 +157,20 @@ export async function crearUsuario(datos, creadoPor) {
     problemas.push('Un Vendedor necesita una sucursal asignada.');
   }
 
+  if (!idEmpresa) problemas.push('Falta indicar la empresa.');
+  if (!esAlcanceValido(alcance)) problemas.push('El alcance debe ser EMPRESA o GRUPO.');
+
   if (problemas.length) throw badRequest('Revisa los datos de la cuenta', problemas);
+
+  // Un Gerente de empresa no puede dar de alta gente en la empresa hermana, ni
+  // repartir alcance de grupo —que es justamente el permiso para cruzar la
+  // frontera—. Solo quien ya ve las dos puede otorgarlo.
+  if (actor && !puedeConEmpresa(actor, idEmpresa)) {
+    throw forbidden('Solo puedes dar de alta usuarios de tu propia empresa.');
+  }
+  if (alcance !== ALCANCE_EMPRESA && actor && !veTodasLasEmpresas(actor)) {
+    throw forbidden('El alcance de grupo solo lo puede otorgar quien ya ve las dos empresas.');
+  }
 
   if (sucursalId !== null) {
     const sucursal = await queryUno('SELECT id FROM sucursales WHERE id = @id', { id: sucursalId });
@@ -163,8 +192,10 @@ export async function crearUsuario(datos, creadoPor) {
 
   const [fila] = await query(
     `INSERT INTO usuarios
-        (nombre, email, password_hash, rol, sucursal_id, activo, debe_cambiar_password, creado_por)
-     VALUES (@nombre, @email, @hash, @rol, @sucursal::int, TRUE, TRUE, @creadoPor::int)
+        (nombre, email, password_hash, rol, sucursal_id, id_empresa, alcance,
+         activo, debe_cambiar_password, creado_por)
+     VALUES (@nombre, @email, @hash, @rol, @sucursal::int, @empresa::int, @alcance,
+             TRUE, TRUE, @creadoPor::int)
      RETURNING id`,
     {
       nombre,
@@ -172,6 +203,8 @@ export async function crearUsuario(datos, creadoPor) {
       hash,
       rol,
       sucursal: sucursalId,
+      empresa: idEmpresa,
+      alcance,
       creadoPor: creadoPor ?? null,
     },
   );
@@ -192,9 +225,16 @@ export async function crearUsuario(datos, creadoPor) {
  * @param {object} cambios  { nombre?, rol?, sucursal_id?, activo? }
  * @param {number} actorId  quién está haciendo el cambio (el Gerente en sesión)
  */
-export async function actualizarUsuario(id, cambios, actorId) {
+export async function actualizarUsuario(id, cambios, actorId, actor = null) {
   const objetivo = await obtenerUsuario(id);
   const esUnoMismo = Number(id) === Number(actorId);
+
+  // Primero la frontera entre empresas. Se responde "no existe" y no "no
+  // puedes": decirle a alguien que la cuenta existe pero es de la otra empresa
+  // ya le confirma que existe.
+  if (actor && !puedeConEmpresa(actor, objetivo.id_empresa)) {
+    throw notFound('Usuario no encontrado');
+  }
 
   const asignaciones = [];
   const params = { id: Number(id) };
@@ -248,6 +288,34 @@ export async function actualizarUsuario(id, cambios, actorId) {
     }
   }
 
+  // Mover a alguien de empresa, o darle alcance de grupo, es cruzar la
+  // frontera: solo lo puede hacer quien ya la ve completa.
+  if (cambios.id_empresa !== undefined && Number(cambios.id_empresa) !== Number(objetivo.id_empresa)) {
+    if (actor && !veTodasLasEmpresas(actor)) {
+      problemas.push('Solo quien ve las dos empresas puede cambiar de empresa a una cuenta.');
+    } else if (!Number(cambios.id_empresa)) {
+      problemas.push('La empresa no es válida.');
+    } else {
+      asignaciones.push('id_empresa = @empresa::int');
+      params.empresa = Number(cambios.id_empresa);
+    }
+  }
+
+  if (cambios.alcance !== undefined && cambios.alcance !== objetivo.alcance) {
+    if (!esAlcanceValido(cambios.alcance)) {
+      problemas.push('El alcance debe ser EMPRESA o GRUPO.');
+    } else if (actor && !veTodasLasEmpresas(actor)) {
+      problemas.push('Solo quien ve las dos empresas puede otorgar o quitar el alcance de grupo.');
+    } else if (esUnoMismo && cambios.alcance === ALCANCE_EMPRESA) {
+      // Mismo espíritu que "no puedes quitarte tu propio rol": si el único que
+      // ve las dos empresas se baja solo, ya nadie puede volver a subir a nadie.
+      problemas.push('No puedes quitarte a ti mismo el alcance de grupo. Pídeselo a otro.');
+    } else {
+      asignaciones.push('alcance = @alcance');
+      params.alcance = cambios.alcance;
+    }
+  }
+
   if (cambios.activo !== undefined) {
     const activo = cambios.activo === true || cambios.activo === 1 || cambios.activo === '1';
 
@@ -282,8 +350,12 @@ export async function actualizarUsuario(id, cambios, actorId) {
  *
  * @returns {Promise<{ usuario: object, passwordTemporal: string }>}
  */
-export async function restablecerPassword(id, actorId) {
+export async function restablecerPassword(id, actorId, actor = null) {
   const objetivo = await obtenerUsuario(id);
+
+  if (actor && !puedeConEmpresa(actor, objetivo.id_empresa)) {
+    throw notFound('Usuario no encontrado');
+  }
 
   if (!objetivo.activo) {
     throw badRequest('La cuenta está desactivada. Actívala antes de restablecer su contraseña.');

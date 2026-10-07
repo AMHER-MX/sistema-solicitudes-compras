@@ -16,10 +16,12 @@ import { badRequest, unauthorized } from '../utils/errors.js';
 
 const PERFIL = `
   SELECT u.id, u.nombre, u.email, u.rol, u.sucursal_id, u.ultimo_acceso,
-         u.debe_cambiar_password,
-         su.nombre AS sucursal_nombre, su.clave AS sucursal_clave
+         u.debe_cambiar_password, u.id_empresa, u.alcance,
+         su.nombre AS sucursal_nombre, su.clave AS sucursal_clave,
+         e.clave  AS empresa_clave,   e.nombre AS empresa_nombre
   FROM      usuarios u
-  LEFT JOIN sucursales su ON su.id = u.sucursal_id`;
+  LEFT JOIN sucursales su ON su.id = u.sucursal_id
+  LEFT JOIN empresas    e ON e.id  = u.id_empresa`;
 
 export async function login(req, res) {
   const { email, password } = req.body ?? {};
@@ -32,10 +34,12 @@ export async function login(req, res) {
 
   const usuario = await queryUno(
     `SELECT u.id, u.nombre, u.email, u.password_hash, u.rol, u.sucursal_id, u.activo,
-            u.debe_cambiar_password,
-            su.nombre AS sucursal_nombre, su.clave AS sucursal_clave
+            u.debe_cambiar_password, u.id_empresa, u.alcance,
+            su.nombre AS sucursal_nombre, su.clave AS sucursal_clave,
+            e.clave  AS empresa_clave,   e.nombre AS empresa_nombre
      FROM      usuarios u
      LEFT JOIN sucursales su ON su.id = u.sucursal_id
+     LEFT JOIN empresas    e ON e.id  = u.id_empresa
      WHERE     LOWER(u.email) = LOWER(@email)`,
     { email },
   );

@@ -16,6 +16,7 @@ import {
 } from '../components/ui/Primitivos.jsx';
 import { catalogosApi, dashboardApi } from '../api/client.js';
 import BotonExcel from '../components/BotonExcel.jsx';
+import SelectorEmpresa, { useEmpresas } from '../components/SelectorEmpresa.jsx';
 import { ESTILO_ESTATUS, moneda, numero } from '../lib/constantes.js';
 
 const VENTANAS = [
@@ -27,20 +28,29 @@ const VENTANAS = [
 
 export default function DashboardPage() {
   const [dias, setDias] = useState(30);
+  const [empresa, setEmpresa] = useState('');
   const [sucursal, setSucursal] = useState('');
   const [sucursales, setSucursales] = useState([]);
+  const { empresas, veTodas } = useEmpresas();
   const [datos, setDatos] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
 
+  // Las sucursales siguen a la empresa elegida: si el Gerente filtra CADUSA,
+  // el selector de sucursal no puede seguir ofreciendo las de CATOSA.
   useEffect(() => {
-    catalogosApi.sucursales().then((d) => setSucursales(d.sucursales)).catch(() => {});
-  }, []);
+    setSucursal('');
+    catalogosApi.sucursales({ empresa: empresa || undefined })
+      .then((d) => setSucursales(d.sucursales))
+      .catch(() => {});
+  }, [empresa]);
 
   const cargar = useCallback(async () => {
     setCargando(true);
     try {
-      const d = await dashboardApi.gerencia({ dias, sucursal: sucursal || undefined });
+      const d = await dashboardApi.gerencia({
+        dias, sucursal: sucursal || undefined, empresa: empresa || undefined,
+      });
       setDatos(d);
       setError('');
     } catch (e) {
@@ -48,7 +58,7 @@ export default function DashboardPage() {
     } finally {
       setCargando(false);
     }
-  }, [dias, sucursal]);
+  }, [dias, sucursal, empresa]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -61,10 +71,27 @@ export default function DashboardPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-base font-semibold tracking-tight text-ink">Tablero gerencial</h1>
-          <p className="text-xs text-ink-2">Solicitudes de compra y faltantes de inventario</p>
+          <p className="text-xs text-ink-2">
+            Solicitudes de compra y faltantes de inventario
+            {/* De quién son estos números. Solo hace falta decirlo cuando
+                puede ser de más de uno: a quien ve una sola empresa, repetirle
+                su propio nombre en cada pantalla no le aporta nada. */}
+            {veTodas && datos?.empresa && (
+              <>
+                {' · '}
+                <span className="font-medium text-ink">{datos.empresa.nombre}</span>
+              </>
+            )}
+          </p>
         </div>
         {/* Los filtros van en una sola fila arriba de las gráficas. */}
         <div className="flex flex-wrap items-center gap-2">
+          <SelectorEmpresa
+            valor={empresa}
+            onChange={setEmpresa}
+            empresas={empresas}
+            veTodas={veTodas}
+          />
           <div className="w-44">
             <Select
               value={dias}
@@ -87,13 +114,13 @@ export default function DashboardPage() {
           <BotonExcel
             tipo="indicadores"
             etiqueta="Indicadores"
-            filtros={{ dias, sucursal: sucursal || undefined }}
+            filtros={{ dias, sucursal: sucursal || undefined, empresa: empresa || undefined }}
             onError={setError}
           />
           <BotonExcel
             tipo="faltantes"
             etiqueta="Faltantes"
-            filtros={{ dias, sucursal: sucursal || undefined }}
+            filtros={{ dias, sucursal: sucursal || undefined, empresa: empresa || undefined }}
             onError={setError}
           />
           <Boton variante="secundario" icono={RefreshCw} onClick={cargar}>Actualizar</Boton>

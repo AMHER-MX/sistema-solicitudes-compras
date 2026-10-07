@@ -18,13 +18,21 @@ import {
   esEstatusValido, esTipoValido, puedeConvertir, puedeConvertirlo, puedeEditarlo,
   siguientesEstatus, transicionPermitida,
 } from '../utils/estatus.js';
-import { badRequest, conflict, forbidden } from '../utils/errors.js';
+import { empresaParaConsulta, puedeConEmpresa } from '../utils/empresas.js';
+import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
 
 /**
  * Un Vendedor solo puede ver y mover lo suyo. Compras y Gerencia, todo.
  * Se usa en cada endpoint que recibe un :id, porque el id lo pone quien llama.
  */
 function exigirAcceso(usuario, documento) {
+  // La empresa se revisa ANTES que el vendedor, y con un mensaje que no
+  // confirma nada: a quien teclea el id de un folio de la otra empresa se le
+  // dice que no existe, no que existe pero es ajeno. Un "no tienes permiso"
+  // ya le habría dicho que ese folio es real.
+  if (!puedeConEmpresa(usuario, documento.id_empresa)) {
+    throw notFound(`No existe la solicitud ${documento.id}`);
+  }
   if (usuario.rol === ROLES.VENDEDOR && documento.id_vendedor !== usuario.id) {
     throw forbidden('Solo puedes trabajar con tus propias cotizaciones y pedidos');
   }
@@ -72,6 +80,9 @@ export async function crear(req, res) {
   }
 
   const solicitud = await crearSolicitud({
+    // Va el usuario completo para que el servicio pueda negarse si la sucursal
+    // es de la otra empresa.
+    usuario: req.usuario,
     id_vendedor: req.usuario.id,
     id_sucursal: sucursalFinal,
     id_cliente,
@@ -112,6 +123,9 @@ export async function listar(req, res) {
     busqueda:    req.query.busqueda,
     limite:      req.query.limite,
     pagina:      req.query.pagina,
+    // Quien ve una sola empresa queda limitado a la suya aunque mande otra en
+    // la query; quien tiene alcance de grupo puede pedir una o verlas todas.
+    id_empresa:  empresaParaConsulta(req.usuario, req.query.empresa),
   };
 
   // Regla de negocio: un Vendedor solo ve sus propias solicitudes,

@@ -26,6 +26,19 @@ export const ESTATUS = [...new Set([...ESTATUS_COTIZACION, ...ESTATUS_PEDIDO])];
 export const PRIORIDADES = ['Urgente', 'Normal', 'Baja'];
 
 /**
+ * Las dos empresas hermanas.
+ *
+ * Comparten este sistema y la vista de existencias, pero NO sus documentos.
+ * El color las distingue de un vistazo en las pantallas donde se pueden ver
+ * las dos; donde solo se ve una, el badge ni siquiera aparece —repetir
+ * "CATOSA" en cada renglón de una lista que es toda de CATOSA es ruido.
+ */
+export const ESTILO_EMPRESA = {
+  CATOSA: { clases: 'bg-brand/10  text-ink ring-brand/40',  punto: 'bg-brand'  },
+  CADUSA: { clases: 'bg-serious/12 text-ink ring-serious/45', punto: 'bg-serious' },
+};
+
+/**
  * Cómo va el trabajo de Compras SOBRE una cotización.
  *
  * Es un eje aparte del estatus del documento. Para el vendedor la cotización

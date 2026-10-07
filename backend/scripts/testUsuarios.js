@@ -95,9 +95,16 @@ const CORREO_LIBRE = (sql) => {
 };
 definirRespuestaEnsayo(CORREO_LIBRE);
 
-const alta = (extra) => usuarios.crearUsuario(
+// El tercer argumento es QUIÉN está dando de alta. De él se hereda la empresa
+// cuando no se dice otra, y es contra él que se revisa si puede crear gente en
+// la empresa hermana o repartir alcance de grupo.
+const GERENTE_CATOSA = { id: 1, rol: 'Gerente', id_empresa: 1, alcance: 'EMPRESA' };
+const GERENTE_GRUPO  = { id: 2, rol: 'Gerente', id_empresa: 1, alcance: 'GRUPO' };
+
+const alta = (extra, actor = GERENTE_CATOSA) => usuarios.crearUsuario(
   { nombre: 'Ana Ríos', email: 'ana.rios@amher.com.mx', rol: 'Vendedor', sucursal_id: 1, ...extra },
   1,
+  actor,
 );
 
 await debeFallar('Rechaza el nombre vacío', () => alta({ nombre: '' }), 'nombre');
@@ -108,6 +115,33 @@ await debeFallar('Rechaza un Vendedor sin sucursal', () => alta({ sucursal_id: n
 const { usuario: creado, passwordTemporal } = await alta({});
 check('El alta devuelve una contraseña temporal', typeof passwordTemporal === 'string' && passwordTemporal.length === 14);
 check('El alta devuelve el usuario', Boolean(creado?.id));
+
+
+console.log('\n== La frontera entre CATOSA y CADUSA ==');
+
+// Éstas son las reglas que impiden que una empresa vea o toque a la otra. Si
+// alguna se rompe, el daño no es un error en pantalla: es información de una
+// empresa en manos de la otra, sin que nadie se entere.
+
+await debeFallar('Un Gerente de empresa no da de alta en la hermana',
+  () => alta({ id_empresa: 2 }), 'tu propia empresa');
+
+await debeFallar('Un Gerente de empresa no reparte alcance de grupo',
+  () => alta({ alcance: 'GRUPO' }), 'las dos empresas');
+
+const deGrupo = await alta({ id_empresa: 2 }, GERENTE_GRUPO);
+check('Quien ve las dos SÍ puede dar de alta en la hermana', Boolean(deGrupo.usuario));
+
+const conAlcance = await alta({ alcance: 'GRUPO' }, GERENTE_GRUPO);
+check('Y SÍ puede otorgar alcance de grupo', Boolean(conAlcance.usuario));
+
+await debeFallar('Un alcance inventado se rechaza',
+  () => alta({ alcance: 'TODO' }, GERENTE_GRUPO), 'EMPRESA o GRUPO');
+
+// La empresa se hereda de quien da de alta: es el caso de todos los días y no
+// tiene por qué ser un campo más que llenar.
+const heredada = await alta({});
+check('Sin decir empresa, se hereda la de quien da de alta', Boolean(heredada.usuario));
 
 // Un Comprador o un Gerente sí pueden ir sin sucursal: no capturan solicitudes
 // a nombre de una agencia.

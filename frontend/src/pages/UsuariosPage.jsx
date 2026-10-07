@@ -18,7 +18,7 @@ import {
   Tarjeta, TarjetaEncabezado,
 } from '../components/ui/Primitivos.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { DESCRIPCION_ROL, ESTILO_ROL, ROLES, fechaHora } from '../lib/constantes.js';
+import { DESCRIPCION_ROL, ESTILO_EMPRESA, ESTILO_ROL, ROLES, fechaHora } from '../lib/constantes.js';
 
 /* ──────────────────── Ventana de la contraseña temporal ─────────────────── */
 
@@ -75,9 +75,9 @@ function ModalPasswordTemporal({ datos, onCerrar }) {
 
 /* ─────────────────────────── Alta / edición ─────────────────────────────── */
 
-const VACIO = { nombre: '', email: '', rol: 'Vendedor', sucursal_id: '' };
+const VACIO = { nombre: '', email: '', rol: 'Vendedor', sucursal_id: '', id_empresa: '', alcance: 'EMPRESA' };
 
-function ModalUsuario({ usuario, sucursales, onCerrar, onGuardado }) {
+function ModalUsuario({ usuario, sucursales, empresas, veTodas, onCerrar, onGuardado }) {
   const esAlta = !usuario;
   const [datos, setDatos] = useState(() => (usuario
     ? {
@@ -85,9 +85,13 @@ function ModalUsuario({ usuario, sucursales, onCerrar, onGuardado }) {
       email: usuario.email,
       rol: usuario.rol,
       sucursal_id: usuario.sucursal_id ?? '',
+      id_empresa: usuario.id_empresa ?? '',
+      alcance: usuario.alcance ?? 'EMPRESA',
       activo: Boolean(usuario.activo),
     }
-    : VACIO));
+    // En el alta se preselecciona la única empresa cuando solo hay una: quien
+    // administra una sola no tiene por qué elegir cada vez.
+    : { ...VACIO, id_empresa: empresas.length === 1 ? empresas[0].id : '' }));
   const [error, setError] = useState('');
   const [detalles, setDetalles] = useState([]);
   const [guardando, setGuardando] = useState(false);
@@ -106,6 +110,8 @@ function ModalUsuario({ usuario, sucursales, onCerrar, onGuardado }) {
           email: datos.email,
           rol: datos.rol,
           sucursal_id: datos.sucursal_id === '' ? null : Number(datos.sucursal_id),
+          id_empresa: datos.id_empresa === '' ? undefined : Number(datos.id_empresa),
+          alcance: datos.alcance,
         });
         onGuardado({
           titulo: 'Cuenta creada',
@@ -118,6 +124,10 @@ function ModalUsuario({ usuario, sucursales, onCerrar, onGuardado }) {
           rol: datos.rol,
           sucursal_id: datos.sucursal_id === '' ? null : Number(datos.sucursal_id),
           activo: datos.activo,
+          ...(veTodas ? {
+            id_empresa: datos.id_empresa === '' ? undefined : Number(datos.id_empresa),
+            alcance: datos.alcance,
+          } : {}),
         });
         onGuardado(null);
       }
@@ -165,6 +175,32 @@ function ModalUsuario({ usuario, sucursales, onCerrar, onGuardado }) {
             {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
           </Select>
         </Campo>
+
+        {/* La empresa solo se elige cuando hay de dónde. A quien administra
+            una sola empresa no se le pregunta: se le asigna la suya. */}
+        {veTodas && (
+          <Campo etiqueta="Empresa" requerido
+            hint="De qué empresa es esta persona. Decide qué folios ve y dónde puede capturar.">
+            <Select value={datos.id_empresa} onChange={cambiar('id_empresa')}>
+              <option value="">Elige una…</option>
+              {empresas.map((e) => (
+                <option key={e.id} value={e.id}>{e.clave} · {e.nombre}</option>
+              ))}
+            </Select>
+          </Campo>
+        )}
+
+        {veTodas && (
+          <Campo etiqueta="Alcance"
+            hint={datos.alcance === 'GRUPO'
+              ? 'Ve y administra las DOS empresas. Dáselo solo a quien de verdad lo necesite.'
+              : 'Ve únicamente su empresa. Es lo normal.'}>
+            <Select value={datos.alcance} onChange={cambiar('alcance')}>
+              <option value="EMPRESA">Solo su empresa</option>
+              <option value="GRUPO">Las dos empresas</option>
+            </Select>
+          </Campo>
+        )}
 
         <Campo
           etiqueta="Sucursal"
@@ -225,6 +261,10 @@ export default function UsuariosPage() {
 
   const [lista, setLista] = useState([]);
   const [sucursales, setSucursales] = useState([]);
+  const [empresas, setEmpresas] = useState([]);
+  // Quien ve más de una empresa es quien puede moverlas. El servidor ya lo
+  // sabe; la pantalla solo le pregunta en lugar de deducirlo del rol.
+  const [veTodas, setVeTodas] = useState(false);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
 
@@ -257,6 +297,9 @@ export default function UsuariosPage() {
 
   useEffect(() => {
     catalogosApi.sucursales().then((r) => setSucursales(r.sucursales)).catch(() => {});
+    catalogosApi.empresas()
+      .then((r) => { setEmpresas(r.empresas ?? []); setVeTodas(Boolean(r.ve_todas)); })
+      .catch(() => {});
   }, []);
 
   const restablecer = async (u) => {
@@ -398,6 +441,15 @@ export default function UsuariosPage() {
                       </td>
                       <td className="px-3 py-3">
                         <Badge texto={u.rol} estilo={ESTILO_ROL[u.rol]} />
+                        {/* Solo cuando hay dos empresas que distinguir. */}
+                        {veTodas && u.empresa_clave && (
+                          <Badge texto={u.empresa_clave} estilo={ESTILO_EMPRESA[u.empresa_clave]} />
+                        )}
+                        {u.alcance === 'GRUPO' && (
+                          <span title="Ve y administra las dos empresas">
+                            <Badge texto="Ve el grupo" />
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-3 text-ink-2">
                         {u.sucursal_nombre
@@ -443,6 +495,8 @@ export default function UsuariosPage() {
         <ModalUsuario
           usuario={editando}
           sucursales={sucursales}
+          empresas={empresas}
+          veTodas={veTodas}
           onCerrar={() => setEditando(undefined)}
           onGuardado={(datosPassword) => {
             setEditando(undefined);

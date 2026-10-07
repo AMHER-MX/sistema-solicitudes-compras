@@ -13,6 +13,7 @@
  * Un Vendedor solo puede bajar lo suyo: el filtro se le impone en el servidor,
  * mande lo que mande en la petición.
  */
+import { queryUno } from '../config/db.js';
 import {
   bitacoraPorFolio, concentradoFaltantes, indicadoresGerencia, solicitudesConDetalle,
 } from '../services/reportes.service.js';
@@ -20,6 +21,7 @@ import {
   FORMATO, aBuffer, escribirBloque, escribirPortada, escribirTabla, nuevoLibro,
 } from '../services/excel.js';
 import { ROLES } from '../utils/estatus.js';
+import { empresaParaConsulta } from '../utils/empresas.js';
 import { badRequest } from '../utils/errors.js';
 
 /** Filtros de la petición, ya limpios. */
@@ -34,6 +36,9 @@ function filtrosDe(req) {
     hasta: req.query.hasta,
     busqueda: req.query.busqueda,
     dias: req.query.dias,
+    // Igual que en las pantallas: a quien ve una sola empresa se le impone la
+    // suya aunque pida otra.
+    id_empresa: empresaParaConsulta(req.usuario, req.query.empresa),
   };
 
   // Un Vendedor solo ve lo suyo, aunque mande otro id en la query.
@@ -43,8 +48,14 @@ function filtrosDe(req) {
 }
 
 /** Descripción legible de los filtros, para la portada del archivo. */
-function describirFiltros(req, filtros) {
+async function describirFiltros(req, filtros) {
   const partes = [];
+  // La empresa va PRIMERO en la portada del Excel. Es el dato que cambia el
+  // significado de todos los números de abajo, y el archivo acaba reenviado
+  // por correo sin que nadie recuerde quién lo bajó ni desde qué cuenta.
+  partes.push(filtros.id_empresa
+    ? `Empresa: ${await nombreDeEmpresa(filtros.id_empresa, req)}`
+    : 'Empresa: las dos (CATOSA y CADUSA)');
   if (filtros.tipo) partes.push(`Tipo: ${filtros.tipo === 'Cotizacion' ? 'Cotizaciones' : 'Pedidos'}`);
   if (filtros.estatus) partes.push(`Estatus: ${filtros.estatus}`);
   if (filtros.prioridad) partes.push(`Prioridad: ${filtros.prioridad}`);
@@ -55,6 +66,27 @@ function describirFiltros(req, filtros) {
   if (req.usuario.rol === ROLES.VENDEDOR) partes.push('Solo mis solicitudes');
   else if (filtros.sucursal) partes.push(`Sucursal (id): ${filtros.sucursal}`);
   return partes;
+}
+
+/**
+ * Nombre de la empresa del filtro, leído de la base.
+ *
+ * Se consulta en vez de aceptarlo de la query o de suponer el del usuario:
+ * quien ve el grupo puede bajar el reporte de la empresa hermana, y en ese
+ * caso su propio nombre sería justo el equivocado. Una portada que dice
+ * "CATOSA" encima de cifras de CADUSA es peor que no decir nada, porque nadie
+ * la vuelve a cuestionar.
+ *
+ * Son dos renglones que no cambian nunca, así que se quedan en memoria.
+ */
+const nombresDeEmpresa = new Map();
+async function nombreDeEmpresa(id, req) {
+  if (id === req.usuario.id_empresa) return req.usuario.empresa_nombre;
+  if (!nombresDeEmpresa.has(id)) {
+    const fila = await queryUno('SELECT nombre FROM empresas WHERE id = @id', { id });
+    nombresDeEmpresa.set(id, fila?.nombre ?? 'Empresa desconocida');
+  }
+  return nombresDeEmpresa.get(id);
 }
 
 /** Manda el libro como descarga, con un nombre que se entienda en la carpeta. */
@@ -88,7 +120,7 @@ export async function solicitudes(req, res) {
              + 'antes y después de que el cliente apruebe: una cotización que se cierra '
              + 'no cambia de número, cambia de tipo.',
     generadoPor: req.usuario.nombre,
-    filtros: describirFiltros(req, filtros),
+    filtros: await describirFiltros(req, filtros),
   });
 
   escribirTabla(hoja, {
@@ -145,7 +177,7 @@ export async function historial(req, res) {
     subtitulo: 'Quién movió qué y cuándo. "Horas desde el anterior" mide cuánto tardó ESE tramo,'
              + ' no la solicitud completa: sirve para ver dónde se atora el proceso.',
     generadoPor: req.usuario.nombre,
-    filtros: describirFiltros(req, filtros),
+    filtros: await describirFiltros(req, filtros),
   });
 
   escribirTabla(hoja, {
@@ -181,7 +213,7 @@ export async function faltantes(req, res) {
     subtitulo: 'Solo las partidas que al pedirse tenían CERO existencia en la sucursal.'
              + ' Ordenado por piezas pedidas: arriba está lo que más conviene evaluar para tener en piso.',
     generadoPor: req.usuario.nombre,
-    filtros: describirFiltros(req, filtros),
+    filtros: await describirFiltros(req, filtros),
   });
 
   escribirTabla(hoja, {
@@ -216,7 +248,7 @@ export async function indicadores(req, res) {
     titulo: 'Indicadores de compras',
     subtitulo: 'Los mismos números del tablero de gerencia, para el periodo filtrado.',
     generadoPor: req.usuario.nombre,
-    filtros: describirFiltros(req, filtros),
+    filtros: await describirFiltros(req, filtros),
   });
 
   hoja.getColumn(1).width = 34;

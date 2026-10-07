@@ -9,5 +9,6 @@ const router = Router();
 router.use(autenticar, cuentaVigente);
 router.get('/sucursales', asyncHandler(ctrl.sucursales));
 router.get('/clientes', asyncHandler(ctrl.clientes));
+router.get('/empresas', asyncHandler(ctrl.empresas));
 
 export default router;

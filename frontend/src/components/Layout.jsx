@@ -4,7 +4,7 @@
  */
 import { BarChart3, ClipboardList, KeyRound, LogOut, Search, Users } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
-import { LogoCatosa } from './LogoCatosa.jsx';
+import LogoEmpresa from './LogoEmpresa.jsx';
 
 /** Pestañas visibles según el rol del usuario. */
 export function pestanasPorRol(rol) {
@@ -29,7 +29,12 @@ export default function Layout({ vista, setVista, onCambiarPassword, children })
         <div className="mx-auto flex max-w-7xl items-center gap-4 px-4 py-3">
           {/* Marca: el logo de la empresa y, separado, el nombre del sistema */}
           <div className="flex shrink-0 items-center gap-3">
-            <LogoCatosa className="w-24 text-ink sm:w-28" conBajada={false} />
+            {/* La marca de SU empresa, no la de la casa matriz. */}
+            <LogoEmpresa
+              clave={usuario.empresa_clave}
+              nombre={usuario.empresa_nombre}
+              className="w-24 text-ink sm:w-28"
+            />
             <span className="hidden h-8 w-px bg-hairline sm:block" aria-hidden />
             <div className="hidden leading-tight sm:block">
               <p className="text-sm font-semibold tracking-tight text-ink">SGC Compras</p>

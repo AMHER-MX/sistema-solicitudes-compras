@@ -180,6 +180,8 @@ export const dashboardApi = {
 };
 
 export const catalogosApi = {
-  sucursales: () => api.get('/catalogos/sucursales').then((r) => r.data),
+  sucursales: (params = {}) => api.get('/catalogos/sucursales', { params }).then((r) => r.data),
+  /** Las empresas que esta persona puede ver, y si las ve todas. */
+  empresas:   () => api.get('/catalogos/empresas').then((r) => r.data),
   clientes:   (q = '') => api.get('/catalogos/clientes', { params: { q } }).then((r) => r.data),
 };

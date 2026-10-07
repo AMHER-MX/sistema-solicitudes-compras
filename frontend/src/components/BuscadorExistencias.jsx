@@ -211,12 +211,32 @@ export default function BuscadorExistencias({ onSolicitar }) {
                       )}
                     </p>
                     <p className="truncate text-xs text-ink-2">{a.descripcion}</p>
+                    {/* Dónde más hay.
+                        Lo de la empresa hermana se dice con todas sus letras:
+                        "hay 3 en Durango (CADUSA)" es una llamada telefónica,
+                        no una orden de compra, y confundir una pieza ajena con
+                        una propia es prometerle al cliente algo que no se
+                        tiene. */}
                     {a.existencia_otras_sucursales?.length > 0 && (
-                      <p className="mt-1 text-[11px] text-muted">
-                        Disponible en:{' '}
-                        {a.existencia_otras_sucursales
-                          .map((o) => `${o.almacen} (${numero(o.existencia)})`)
-                          .join(' · ')}
+                      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+                        <span className="text-muted">Disponible en:</span>
+                        {a.existencia_otras_sucursales.map((o) => (
+                          <span
+                            key={`${a.sku}-${o.almacen}`}
+                            className={o.es_otra_empresa
+                              ? 'rounded bg-warning/15 px-1.5 py-0.5 text-ink ring-1 ring-inset ring-warning/40'
+                              : 'text-muted'}
+                            title={o.es_otra_empresa
+                              ? `${o.nombre ?? o.almacen} es de ${o.empresa_nombre ?? o.empresa_clave}. `
+                                + 'La pieza existe, pero no es de tu empresa: hay que pedírsela.'
+                              : undefined}
+                          >
+                            {o.nombre ?? o.almacen} ({numero(o.existencia)})
+                            {o.es_otra_empresa && (
+                              <strong className="ml-1 font-medium">· {o.empresa_clave}</strong>
+                            )}
+                          </span>
+                        ))}
                       </p>
                     )}
                   </div>

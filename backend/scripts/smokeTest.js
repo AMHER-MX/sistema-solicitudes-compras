@@ -8,6 +8,7 @@
  *
  *   cd backend && npm run smoke
  */
+import bcrypt from 'bcryptjs';
 import { crearApp } from '../src/app.js';
 import { cerrarPool, query } from '../src/config/db.js';
 // El vencimiento se prueba llamando al vigía a mano: esperar 30 días no es
@@ -173,7 +174,9 @@ async function main() {
   });
   check('POST /solicitudes -> 201', creada.status === 201);
   const sol = creada.data?.solicitud;
-  check('Se generó folio', /^SC-\d{4}-\d{6}$/.test(sol?.folio || ''), sol?.folio);
+  // El folio ahora dice la empresa: SC-CATOSA-2026-000001.
+  check('Se generó folio con la empresa dentro',
+    /^SC-(CATOSA|CADUSA)-\d{4}-\d{6}$/.test(sol?.folio || ''), sol?.folio);
   check('Nace como Cotización', sol?.tipo === 'Cotizacion', `(${sol?.tipo})`);
   // Con un faltante, nace en manos de Compras: alguien tiene que conseguirlo.
   check('Con faltante nace con Compras', sol?.estatus_actual === 'Con Compras',
@@ -498,6 +501,11 @@ async function main() {
   check('Gerente da de alta una cuenta -> 201', alta.status === 201);
   const passwordTemporal = alta.data?.passwordTemporal;
   check('El alta devuelve una contraseña temporal', typeof passwordTemporal === 'string' && passwordTemporal.length >= 8);
+  // Sin empresa, la cuenta nace inservible: el servidor la rechaza en cada
+  // petición. Se comprueba aquí porque se hereda en silencio de quien la crea.
+  check('La cuenta nueva hereda la empresa de quien la creó',
+    Boolean(alta.data?.usuario?.id_empresa) && alta.data?.usuario?.empresa_clave === 'CATOSA',
+    `(${alta.data?.usuario?.empresa_clave})`);
 
   const primerLogin = await api('/auth/login', {
     metodo: 'POST',
@@ -868,9 +876,171 @@ async function main() {
     check('Editar un pedido se rechaza con explicación', false, '(no había pedidos que probar)');
   }
 
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // LA FRONTERA ENTRE CATOSA Y CADUSA
+  //
+  // Éste es el bloque que no se puede romper. Lo que falle aquí no produce un
+  // error en pantalla: produce información de una empresa en manos de la otra,
+  // en silencio y sin que nadie se entere hasta que alguien lo note en una
+  // junta. Por eso se prueba desde el servidor y no mirando botones: una
+  // pantalla se salta escribiendo una dirección, una cláusula WHERE no.
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log('\n== La frontera entre CATOSA y CADUSA ==');
+
+  // Se arma el escenario: una vendedora y un gerente de CADUSA.
+  const [sucCadusa] = await query(
+    "SELECT s.id, s.id_empresa FROM sucursales s JOIN empresas e ON e.id = s.id_empresa WHERE e.clave = 'CADUSA' LIMIT 1",
+  );
+  const PASS_CADUSA = 'CadusaPrueba2026';
+  const hash = await bcrypt.hash(PASS_CADUSA, 4);
+  const [vendCadusa] = await query(
+    `INSERT INTO usuarios (nombre, email, password_hash, rol, sucursal_id, id_empresa, alcance, activo)
+     VALUES ('Vendedor CADUSA', @em, @h, 'Vendedor', @suc, @emp, 'EMPRESA', TRUE)
+     ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, activo = TRUE
+     RETURNING id`,
+    { em: 'vendedor.cadusa@prueba.mx', h: hash, suc: sucCadusa.id, emp: sucCadusa.id_empresa },
+  );
+  await query(
+    `INSERT INTO usuarios (nombre, email, password_hash, rol, id_empresa, alcance, activo)
+     VALUES ('Gerente CADUSA', @em, @h, 'Gerente', @emp, 'EMPRESA', TRUE)
+     ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, activo = TRUE`,
+    { em: 'gerente.cadusa@prueba.mx', h: hash, emp: sucCadusa.id_empresa },
+  );
+  // El Gerente de CATOSA del seed queda con alcance de grupo para probar el
+  // otro lado de la moneda: quien SÍ debe ver las dos.
+  await query("UPDATE usuarios SET alcance = 'GRUPO' WHERE email = 'gerente@demo.mx'");
+
+  const entrar = async (email, password) =>
+    (await api('/auth/login', { metodo: 'POST', body: { email, password } })).data?.token;
+
+  const tokVendCadusa = await entrar('vendedor.cadusa@prueba.mx', PASS_CADUSA);
+  const tokGerCadusa  = await entrar('gerente.cadusa@prueba.mx', PASS_CADUSA);
+  check('Entra el vendedor de CADUSA', Boolean(tokVendCadusa));
+  check('Entra el gerente de CADUSA', Boolean(tokGerCadusa));
+
+  // CADUSA levanta un folio propio. Sin esto, medio bloque pasaría por estar
+  // vacío: `[].every(esDeCadusa)` es cierto, y una lista rota —o un filtro que
+  // no devuelve nada nunca— se vería exactamente igual que una bien separada.
+  const altaCadusa = await api('/solicitudes', {
+    metodo: 'POST', token: tokVendCadusa,
+    body: {
+      id_sucursal: sucCadusa.id,
+      nombre_cliente: 'Cliente de Durango',
+      items: [{
+        sku_producto: 'CAD-FRONTERA-1',
+        descripcion: 'Pieza de prueba de la frontera',
+        cantidad_solicitada: 2,
+        origen: 'LIBRE',
+      }],
+    },
+  });
+  check('CADUSA puede levantar su propio folio', altaCadusa.status === 201,
+    `(${altaCadusa.status} ${altaCadusa.data?.error ?? altaCadusa.data?.solicitud?.folio ?? ''})`);
+  const folioCadusa = altaCadusa.data?.solicitud;
+  check('Y el folio sale con el prefijo de SU empresa',
+    /^SC-CADUSA-/.test(folioCadusa?.folio ?? ''), `(${folioCadusa?.folio})`);
+
+  // 1. Los folios de CATOSA no existen para CADUSA.
+  const deCatosa = await api('/solicitudes', { token: tokenComprador });
+  const unFolioCatosa = deCatosa.data?.solicitudes?.[0];
+  check('Hay folios de CATOSA que vigilar', Boolean(unFolioCatosa), `(${deCatosa.data?.solicitudes?.length})`);
+
+  const listaCadusa = await api('/solicitudes', { token: tokGerCadusa });
+  check('El gerente de CADUSA sí ve lo suyo',
+    (listaCadusa.data?.solicitudes ?? []).some((x) => x.id === folioCadusa?.id),
+    `(${listaCadusa.data?.solicitudes?.length} folios)`);
+  check('El gerente de CADUSA no ve NINGÚN folio de CATOSA',
+    (listaCadusa.data?.solicitudes ?? []).length > 0
+    && (listaCadusa.data?.solicitudes ?? []).every((x) => x.empresa_clave === 'CADUSA'),
+    `(${listaCadusa.data?.solicitudes?.length} folios, empresas: ${[...new Set((listaCadusa.data?.solicitudes ?? []).map((x) => x.empresa_clave))].join(',') || 'ninguna'})`);
+
+  // 1-bis. Y el sentido contrario, que es el que se olvida: lo que acaba de
+  //        capturar Durango no puede asomarse en la mesa de compras de
+  //        Torreón. Una frontera que solo se vigila de un lado no es frontera.
+  const comprasCatosa = await api('/solicitudes', { token: tokenComprador });
+  check('El comprador de CATOSA no ve el folio de CADUSA',
+    !(comprasCatosa.data?.solicitudes ?? []).some((x) => x.id === folioCadusa?.id),
+    `(${comprasCatosa.data?.solicitudes?.length} folios suyos)`);
+  const catosaLoTeclea = await api(`/solicitudes/${folioCadusa?.id}`, { token: tokenComprador });
+  check('Y tecleando su id tampoco -> 404', catosaLoTeclea.status === 404,
+    `(${catosaLoTeclea.status})`);
+
+  // 2. Tecleando el id directo tampoco. Y se responde "no existe", no "no
+  //    puedes": un "no tienes permiso" ya confirmaría que ese folio es real.
+  const alTeclearlo = await api(`/solicitudes/${unFolioCatosa?.id}`, { token: tokGerCadusa });
+  check('Abrir un folio de CATOSA por su id -> 404', alTeclearlo.status === 404,
+    `(${alTeclearlo.status})`);
+  check('Y el mensaje no confirma que exista',
+    !/permiso|empresa/i.test(alTeclearlo.data?.error ?? ''), `(${alTeclearlo.data?.error})`);
+
+  // 3. Tampoco puede levantar documentos en una sucursal ajena.
+  const enSucursalAjena = await api('/solicitudes', {
+    metodo: 'POST', token: tokGerCadusa,
+    body: {
+      id_sucursal: 1, // Torreón, de CATOSA
+      items: [{ sku_producto: 'X-1', descripcion: 'Pieza', cantidad_solicitada: 1, origen: 'LIBRE' }],
+    },
+  });
+  check('No puede capturar en una sucursal de CATOSA -> 403', enSucursalAjena.status === 403,
+    `(${enSucursalAjena.status} ${enSucursalAjena.data?.error ?? ''})`);
+
+  // 4. El catálogo de sucursales tampoco se las ofrece.
+  const sucCadusaLista = await api('/catalogos/sucursales', { token: tokVendCadusa });
+  check('Solo ve las sucursales de CADUSA',
+    (sucCadusaLista.data?.sucursales ?? []).length === 3
+    && sucCadusaLista.data.sucursales.every((x) => x.empresa_clave === 'CADUSA'),
+    `(${sucCadusaLista.data?.sucursales?.map((x) => x.clave).join(', ')})`);
+
+  // 5. Los usuarios de CATOSA no son suyos para administrar.
+  const usuariosCadusa = await api('/usuarios', { token: tokGerCadusa });
+  check('El gerente de CADUSA solo ve usuarios de CADUSA',
+    (usuariosCadusa.data?.usuarios ?? []).every((u) => u.empresa_clave === 'CADUSA'),
+    `(${usuariosCadusa.data?.usuarios?.length} usuarios)`);
+
+  // 6. Los números del dashboard tampoco se mezclan.
+  const dashCadusa = await api('/dashboard/gerencia?dias=365', { token: tokGerCadusa });
+  const dashCatosa = await api('/dashboard/gerencia?dias=365', { token: tokenGerente });
+  const nCadusa = Number(dashCadusa.data?.totales?.total_solicitudes ?? -1);
+  const nGrupo  = Number(dashCatosa.data?.totales?.total_solicitudes ?? -1);
+  check('El dashboard de CADUSA no cuenta los folios de CATOSA',
+    nCadusa > 0 && nCadusa < nGrupo, `(CADUSA ${nCadusa} vs grupo ${nGrupo})`);
+  check('Y el dashboard dice de qué empresa son sus números',
+    Boolean(dashCadusa.data?.empresa?.nombre),
+    `(CADUSA: "${dashCadusa.data?.empresa?.nombre}" · grupo: "${dashCatosa.data?.empresa?.nombre}")`);
+
+  // 7. El Excel es por donde se escaparía sin hacer ruido: nadie revisa un
+  //    archivo renglón por renglón.
+  const excelCadusa = await fetch(`${BASE}/reportes/solicitudes`, {
+    headers: { Authorization: `Bearer ${tokGerCadusa}` },
+  });
+  check('El Excel de CADUSA se genera', excelCadusa.status === 200);
+
+  // 8. Y el otro lado: quien tiene alcance de grupo SÍ ve las dos.
+  const listaGrupo = await api('/solicitudes', { token: tokenGerente });
+  const empresasVistas = new Set((listaGrupo.data?.solicitudes ?? []).map((x) => x.empresa_clave));
+  check('Quien ve el grupo sí ve las dos empresas', empresasVistas.size === 2,
+    `(ve: ${[...empresasVistas].join(', ')})`);
+
+  // 9. La existencia NO se separa: ése es el punto de compartir el sistema.
+  const existGlobal = await api('/productos/existencias?sku=filtro', { token: tokVendCadusa });
+  check('La consulta de existencias responde para CADUSA', existGlobal.status === 200);
+  const almacenes = (existGlobal.data?.articulos ?? [])
+    .flatMap((a) => [a, ...(a.existencia_otras_sucursales ?? [])]);
+  check('Los almacenes vienen etiquetados con su empresa',
+    almacenes.length > 0 && almacenes.some((x) => x.empresa_clave),
+    `(${almacenes.map((x) => `${x.almacen}:${x.empresa_clave ?? '?'}`).join(' ')})`);
+  check('Y se marca cuáles son de la otra empresa',
+    almacenes.some((x) => x.es_otra_empresa === true || x.es_otra_empresa === false));
+
   console.log('\n== Catálogos ==');
+  // Ya no son las 7 de Quiter: son las de SU empresa. Las de la hermana se ven
+  // en la consulta de existencias, pero no son un lugar donde pueda capturar.
   const suc = await api('/catalogos/sucursales', { token: tokenVendedor });
-  check('Lista las 7 sucursales de Quiter', suc.data?.sucursales?.length === 7);
+  check('Solo lista las sucursales de su empresa',
+    suc.data?.sucursales?.length === 4
+    && suc.data.sucursales.every((x) => x.empresa_clave === 'CATOSA'),
+    `(${suc.data?.sucursales?.length}: ${suc.data?.sucursales?.map((x) => x.clave).join(', ')})`);
   const cli = await api('/catalogos/clientes?q=norte', { token: tokenVendedor });
   check('Busca clientes por texto', cli.data?.clientes?.length === 1);
 

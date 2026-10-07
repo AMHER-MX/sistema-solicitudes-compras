@@ -11,6 +11,7 @@
  * y en ningún otro lado: no se guarda en claro ni se escribe en los logs.
  */
 import * as servicio from '../services/usuarios.service.js';
+import { empresaParaConsulta } from '../utils/empresas.js';
 import { badRequest } from '../utils/errors.js';
 
 /** Convierte '1'/'true'/'0'/'false' de la query string a booleano, o undefined. */
@@ -34,6 +35,7 @@ export async function listar(req, res) {
     q: req.query.q,
     rol: req.query.rol,
     activo: aBooleano(req.query.activo),
+    id_empresa: empresaParaConsulta(req.usuario, req.query.empresa),
   });
   res.json({ ok: true, total: usuarios.length, usuarios });
 }
@@ -44,7 +46,9 @@ export async function detalle(req, res) {
 }
 
 export async function crear(req, res) {
-  const { usuario, passwordTemporal } = await servicio.crearUsuario(req.body ?? {}, req.usuario.id);
+  const { usuario, passwordTemporal } = await servicio.crearUsuario(
+    req.body ?? {}, req.usuario.id, req.usuario,
+  );
 
   res.status(201).json({
     ok: true,
@@ -56,12 +60,14 @@ export async function crear(req, res) {
 }
 
 export async function actualizar(req, res) {
-  const usuario = await servicio.actualizarUsuario(idDeRuta(req), req.body ?? {}, req.usuario.id);
+  const usuario = await servicio.actualizarUsuario(
+    idDeRuta(req), req.body ?? {}, req.usuario.id, req.usuario,
+  );
   res.json({ ok: true, usuario });
 }
 
 export async function restablecer(req, res) {
-  const { usuario, passwordTemporal } = await servicio.restablecerPassword(idDeRuta(req), req.usuario.id);
+  const { usuario, passwordTemporal } = await servicio.restablecerPassword(idDeRuta(req), req.usuario.id, req.usuario);
 
   res.json({
     ok: true,

@@ -10,7 +10,7 @@
 import { useState } from 'react';
 import { LogIn, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
-import { LogoCatosa } from '../components/LogoCatosa.jsx';
+import { LogosDelGrupo } from '../components/LogoEmpresa.jsx';
 import { Alerta, Boton, Campo, Input, Tarjeta } from '../components/ui/Primitivos.jsx';
 
 const DEMO = [
@@ -47,7 +47,8 @@ export default function Login() {
       <div className="w-full max-w-sm">
         {/* Identidad del sistema */}
         <div className="mb-6 flex flex-col items-center text-center">
-          <LogoCatosa className="mb-5 w-52 text-ink" />
+          {/* Las dos marcas: todavía no sabemos de qué empresa es quien llega. */}
+          <LogosDelGrupo className="mb-5" />
           <h1 className="text-lg font-semibold tracking-tight text-ink">
             Solicitudes de Compras
           </h1>

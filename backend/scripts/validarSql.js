@@ -25,6 +25,18 @@ const check = (nombre, condicion, extra = '') => {
   if (!condicion) fallos += 1;
 };
 
+// El servicio ahora consulta la sucursal para saber de qué empresa es el
+// documento. En modo ensayo no hay base, así que se le da una respuesta
+// creíble; sin esto el alta falla antes de emitir un solo SQL.
+const RESPUESTAS_PREVIAS = (sql) => {
+  if (/FROM\s+sucursales\s+s/i.test(sql) || /s\.id_empresa/i.test(sql)) {
+    return [{ id: 1, clave: '101', nombre: 'Refacciones Torreón', id_empresa: 1, empresa_clave: 'CATOSA' }];
+  }
+  return undefined;
+};
+
+definirRespuestaEnsayo(RESPUESTAS_PREVIAS);
+
 // ─── Se ejercitan todas las rutas que generan SQL ────────────────────────────
 console.log('\n== Consultas capturadas ==');
 
@@ -67,6 +79,8 @@ const PASSWORD_ACTUAL = 'ClaveTemporal77';
 const HASH_ACTUAL = await bcrypt.hash(PASSWORD_ACTUAL, 4); // 4 rondas: es una prueba
 
 definirRespuestaEnsayo((sql) => {
+  const previa = RESPUESTAS_PREVIAS(sql);
+  if (previa !== undefined) return previa;
   if (/FROM\s+usuarios\s+WHERE\s+email\s*=\s*@email/i.test(sql)) return [];          // el correo está libre
   if (/COUNT\(\*\)\s+AS\s+total/i.test(sql)) return [{ total: 3 }];                        // hay más Gerentes
   if (/FROM\s+sucursales\s+WHERE\s+id\s*=\s*@id/i.test(sql)) return [{ id: 1 }];      // la sucursal existe
@@ -82,20 +96,23 @@ definirRespuestaEnsayo((sql) => {
 await usuarios.listarUsuarios({});
 await usuarios.listarUsuarios({ q: "O'Brien", rol: 'Comprador', activo: true });
 await usuarios.obtenerUsuario(7);
+// El actor va completo: de él hereda la empresa la cuenta nueva.
+const GERENTE = { id: 1, rol: 'Gerente', id_empresa: 1, alcance: 'GRUPO' };
 await usuarios.crearUsuario(
   { nombre: 'Ana Ríos', email: 'ana.rios@amher.com.mx', rol: 'Vendedor', sucursal_id: 1 },
   1,
+  GERENTE,
 );
-await usuarios.actualizarUsuario(7, { nombre: 'Ana Ríos Vega', rol: 'Comprador', sucursal_id: 2, activo: false }, 1);
+await usuarios.actualizarUsuario(7, { nombre: 'Ana Ríos Vega', rol: 'Comprador', sucursal_id: 2, activo: false }, 1, GERENTE);
 // Desactivar a un Gerente dispara la consulta que cuenta cuántos quedan. Es la
 // única forma de que ese SQL pase por aquí, y esa consulta también compara una
 // columna booleana: si no se ejercita, nadie la revisa hasta que truene.
 rolDelObjetivo = 'Gerente';
-await usuarios.actualizarUsuario(7, { activo: false }, 1);
-await usuarios.actualizarUsuario(7, { rol: 'Comprador' }, 1);
+await usuarios.actualizarUsuario(7, { activo: false }, 1, GERENTE);
+await usuarios.actualizarUsuario(7, { rol: 'Comprador' }, 1, GERENTE);
 rolDelObjetivo = 'Vendedor';
 
-await usuarios.restablecerPassword(7, 1);
+await usuarios.restablecerPassword(7, 1, GERENTE);
 await usuarios.cambiarPasswordPropia(7, PASSWORD_ACTUAL, 'MiClaveNueva2026');
 await usuarios.cuentasDemoActivas();
 

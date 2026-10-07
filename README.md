@@ -199,21 +199,41 @@ sgc-compras/
 └── docker-compose.yml             # PostgreSQL local para desarrollo
 ```
 
-### 4.1 El logo
+### 4.1 Los logos
 
-`components/LogoCatosa.jsx` trae el logo de CATOSA **vectorizado**, no como
-imagen. Se ve nítido a cualquier tamaño, pesa poco y toma su color del texto
-que lo rodea (`fill="currentColor"`), así que el mismo archivo sirve en modo
-claro y en oscuro.
+`components/LogoCatosa.jsx` y `components/LogoCadusa.jsx` traen los dos logos
+**vectorizados**, no como imagen. Se ven nítidos a cualquier tamaño, pesan poco
+y toman su color del texto que los rodea (`fill="currentColor"`), así que el
+mismo archivo sirve en modo claro y en oscuro.
 
 ```jsx
-<LogoCatosa className="w-52" />                   // completo, con "CAMIONERA"
-<LogoCatosa className="w-24" conBajada={false} /> // solo el círculo y CATOSA
+<LogoCatosa className="w-52" />                   // completo, con la bajada
+<LogoCatosa className="w-24" conBajada={false} /> // solo el círculo y el nombre
 <MarcaCatosa className="w-8" />                   // solo el círculo
 ```
 
-La bajada "CAMIONERA" se apaga por debajo de unos 140px de ancho, donde ya no
-se lee y solo ensucia.
+La bajada ("CAMIONERA", "CAMIONERA DE DURANGO") se apaga por debajo de unos
+140px de ancho, donde ya no se lee y solo ensucia.
+
+**Cuál de los dos se dibuja no se decide a mano.** `LogoEmpresa.jsx` lo elige
+según `usuario.empresa_clave`, y el encabezado le pone a cada quien la marca de
+SU empresa. Enseñarle a Durango el logo de CATOSA toda la jornada le dice que
+la herramienta es de otros y que él está de prestado; es la clase de detalle
+que decide si la gente la adopta o la aguanta.
+
+```jsx
+<LogoEmpresa clave={usuario.empresa_clave} />  // la que toque
+<MarcaEmpresa clave="CADUSA" />                // solo el emblema
+<LogosDelGrupo />                              // las dos, para la entrada
+```
+
+En la pantalla de entrada salen **las dos**: antes de teclear la contraseña no
+se sabe de qué empresa es quien llega, y poner solo una haría dudar a la otra
+mitad de la gente de si se equivocó de dirección.
+
+Si algún día entra una tercera empresa y todavía no tiene logo dibujado,
+`LogoEmpresa` cae del lado seguro: escribe su nombre en texto en lugar de
+ponerle encima una marca que no es la suya.
 
 ---
 
@@ -422,6 +442,10 @@ levanta. Compras y Gerencia pueden ir sin ella.
 las solicitudes. Por eso el jefe de compras no necesita un rol aparte — con
 `Comprador` ya supervisa a su equipo, y la bitácora dice quién hizo qué.
 
+Ojo con el "todas" de esta tabla: significa *todas las de su empresa*. El rol
+dice **qué** puede hacer alguien; el **alcance** dice **sobre cuántas empresas**
+lo hace, y son dos ejes distintos. Está en [9-bis](#9-bis-dos-empresas-en-un-solo-sistema-catosa-y-cadusa).
+
 ### 7.3 Los seguros que impiden quedarse fuera
 
 Los aplica el servidor, no la pantalla:
@@ -591,6 +615,83 @@ mismo almacén. Hay que sumarlos, no listarlos por separado.
 
 ---
 
+## 9-bis. Dos empresas en un solo sistema (CATOSA y CADUSA)
+
+CATOSA y CADUSA son empresas hermanas del mismo grupo. Comparten el sistema,
+pero **no comparten los documentos**. Lo que una captura no se asoma del lado
+de la otra, y eso no es una preferencia de pantalla: es la regla que sostiene
+que las dos puedan usar la misma herramienta sin pedirse permiso.
+
+### Qué está separado y qué no
+
+| | CATOSA | CADUSA | ¿Se mezclan? |
+|---|---|---|---|
+| Solicitudes y pedidos | suyas | suyas | **No** |
+| Sucursales donde se captura | 101-104 | 201-203 | **No** |
+| Usuarios que se administran | suyos | suyos | **No** |
+| Números del tablero y los Excel | suyos | suyos | **No** |
+| Folios | `SC-CATOSA-2026-000001` | `SC-CADUSA-2026-000001` | **No** (contador aparte) |
+| **Existencias en el ERP** | se ven | se ven | **Sí, a propósito** |
+| Padrón de clientes | compartido | compartido | Sí, *por ahora* |
+
+La fila que importa es la de existencias. Quien busca una pieza **sí** ve que
+Durango tiene tres, marcadas en ámbar y con el nombre de la otra empresa
+pegado. Esa es la razón de ser de la separación: si no se viera, el comprador
+saldría a comprar algo que el grupo ya tiene a 200 km. Pero se ve **marcado**,
+porque "hay 3 en Durango (CADUSA)" es una llamada telefónica, no una orden de
+compra, y confundir una pieza ajena con una propia es prometerle al cliente
+algo que no se tiene.
+
+### Los dos ejes: rol y alcance
+
+Son cosas distintas y conviene no confundirlas.
+
+- **Rol** (Vendedor / Comprador / Gerente) dice *qué* puede hacer alguien.
+- **Alcance** (`EMPRESA` / `GRUPO`) dice *sobre cuántas empresas* lo hace.
+
+Un Gerente de `EMPRESA` manda en lo suyo y la empresa hermana no existe para
+él. Un Gerente de `GRUPO` —hoy, Carlos— ve las dos, puede filtrar por una, y
+es el único que puede dar de alta gente en la empresa hermana o repartir ese
+mismo alcance. Nadie puede quitarse el suyo propio: sin eso, un descuido
+dejaría al grupo sin quien administre a las dos.
+
+El alcance **se lee de la base en cada petición**, no del token. Si viniera del
+token —una foto de hasta ocho horas atrás— quitarle a alguien ese permiso no
+surtiría efecto hasta que caducara. Así surte efecto en el siguiente clic.
+
+### Dónde vive la regla
+
+En el servidor, no en la pantalla. Una pantalla se salta escribiendo una
+dirección; una cláusula `WHERE` no.
+
+- `utils/empresas.js` — `empresaParaConsulta()` decide el límite de cada
+  consulta: devuelve `null` (sin límite) solo para quien ve el grupo.
+  `puedeConEmpresa()` decide si un documento concreto es suyo.
+- `middleware/cuenta.js` — refresca empresa y alcance en cada petición, y
+  rechaza a quien quedó sin empresa asignada.
+- Pedir un folio de la otra empresa por su id contesta **404, no 403**: un "no
+  tienes permiso" ya confirmaría que ese folio existe.
+
+### Lo que lo prueba
+
+El bloque **"La frontera entre CATOSA y CADUSA"** de `npm test` lo revisa en
+los dos sentidos: que Durango no vea nada de Torreón **y** que Torreón no vea
+nada de Durango. Para que la prueba signifique algo, primero levanta un folio
+real de CADUSA — sin eso, media prueba pasaría por estar vacía (`[].every(...)`
+es cierto, y una lista rota se vería igual que una bien separada).
+
+Si alguna vez tocas los filtros de empresa, quita a mano uno de ellos y corre
+`npm test`: tiene que **fallar**. Si pasa, la prueba dejó de servir.
+
+### Pendiente: ¿de quién es cada cliente?
+
+El padrón de clientes es, por ahora, compartido: la API de Quiter no dice a
+qué empresa pertenece cada cliente. **Hay que preguntarle a Sistemas** si ese
+dato se puede exponer. El día que llegue, los clientes se separan igual que
+todo lo demás y esta fila de la tabla cambia a "No".
+
+---
+
 ## 10. Publicarlo en internet (Railway)
 
 El proyecto trae `railway.json` y `nixpacks.toml`: Railway sabe leerlos y no
@@ -631,7 +732,28 @@ ningún servidor.
       (si dice `MOCK`, las existencias serían inventadas).
 - [ ] Tu cuenta real de Gerente creada y las cuatro `@demo.mx` desactivadas.
 
-### 10.4 Una reja más, si la quieres
+### 10.4 Los respaldos (ya están puestos)
+
+La base de Railway tiene **dos redes de seguridad distintas**, y conviene saber
+cuál sirve para qué antes de necesitarlas:
+
+| | Qué es | Para qué sirve |
+|---|---|---|
+| **Point-in-Time Recovery** | Railway guarda el registro de cambios | Volver a **cualquier minuto** de los últimos días. Es lo que salva un "borré lo que no era" de hace una hora. |
+| **Respaldo diario y semanal** | Una copia completa | Volver a **ayer** o a la semana pasada. Es lo que salva un problema que nadie notó en el momento. |
+
+Los dos están activos. **No hay que hacer nada para que corran.**
+
+> ⚠️ En Railway, el PITR aparece como un servicio llamado **Postgres-PITR**. Si
+> alguna vez lo ves marcado para borrarse (en rojo, "staged for deletion"),
+> **cancela el cambio** — borrarlo deja la base sin esa red, y nadie se entera
+> hasta el día que haga falta.
+
+Para restaurar se entra a Railway → el servicio de la base → *Backups*, y se
+elige el punto. Railway levanta una base nueva con esa foto; no pisa la que
+está corriendo, así que se puede revisar antes de cambiar nada.
+
+### 10.5 Una reja más, si la quieres
 
 Cloudflare Zero Trust permite poner una puerta de identidad delante del
 dominio: quien no traiga un correo de la empresa no llega ni a ver la pantalla
@@ -651,7 +773,12 @@ diferencia entre "protegido por una contraseña" y "ni siquiera visible".
       el cliente se sigue armando aparte.
 - [ ] Adjuntar cotizaciones del proveedor a la solicitud.
 - [ ] Asignar una solicitud a un comprador en particular (hoy cualquiera la toma).
-- [ ] Respaldo programado de la base de Railway.
+- [ ] **Preguntarle a Sistemas si Quiter puede decir de qué empresa es cada
+      cliente.** Hoy su API no trae ese dato, así que el padrón de clientes es
+      lo único que CATOSA y CADUSA todavía comparten. Con ese campo, se separa
+      igual que lo demás.
+- [ ] Preguntarles a los compradores qué distingue hoy a un folio de otro: si
+      todos son faltantes, "Prioridad" puede haber dejado de significar algo.
 
 ---
 

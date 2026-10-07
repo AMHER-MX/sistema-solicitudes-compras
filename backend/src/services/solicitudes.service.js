@@ -14,6 +14,7 @@ import {
   esEstatusComprasValido, estatusAlRecotizar, estatusInicialCotizacion,
   puedeConvertir, puedeConvertirlo, puedeEditarlo, requiereNuevaVersion,
 } from '../utils/estatus.js';
+import { puedeConEmpresa } from '../utils/empresas.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
 import { consultarExistencias, existenciaDeSku, precioConfiable } from './erp/index.js';
 
@@ -60,6 +61,9 @@ const SELECT_CABECERA = `
     s.fecha_cierre,
     s.id_comprador_asignado,
     s.actualizado_en,
+    s.id_empresa,
+    emp.clave   AS empresa_clave,
+    emp.nombre  AS empresa_nombre,
     u.nombre    AS vendedor_nombre,
     su.nombre   AS sucursal_nombre,
     su.clave    AS sucursal_clave,
@@ -70,6 +74,7 @@ const FROM_CABECERA = `
   FROM      solicitudes_compras s
   JOIN      usuarios   u    ON u.id    = s.id_vendedor
   JOIN      sucursales su   ON su.id   = s.id_sucursal
+  LEFT JOIN empresas   emp  ON emp.id  = s.id_empresa
   LEFT JOIN clientes   c    ON c.id    = s.id_cliente
   LEFT JOIN usuarios   comp ON comp.id = s.id_comprador_asignado`;
 
@@ -94,8 +99,34 @@ export async function crearSolicitud(datos) {
   const {
     id_vendedor, id_sucursal, id_cliente = null,
     prioridad = 'Normal', observaciones = null, items, almacen_erp,
-    dias_vigencia = DIAS_VIGENCIA_DEFAULT,
+    dias_vigencia = DIAS_VIGENCIA_DEFAULT, usuario,
   } = datos;
+
+  // La empresa del documento sale de la SUCURSAL donde se levanta, no del
+  // usuario. Son casi siempre la misma, pero cuando no lo sean manda el lugar:
+  // una cotización de Durango es de CADUSA aunque la haya capturado alguien
+  // prestado de CATOSA. El controlador ya verificó que esta persona tenga
+  // permiso sobre esa sucursal.
+  const sucursal = await queryUno(
+    `SELECT s.id, s.clave, s.nombre, s.id_empresa, e.clave AS empresa_clave
+     FROM      sucursales s
+     LEFT JOIN empresas e ON e.id = s.id_empresa
+     WHERE     s.id = @id AND s.activo`,
+    { id: Number(id_sucursal) },
+  );
+  if (!sucursal) throw badRequest('La sucursal indicada no existe o está inactiva.');
+  if (!sucursal.id_empresa) {
+    throw badRequest(`La sucursal ${sucursal.nombre} (${sucursal.clave}) no tiene empresa `
+                   + 'asignada, así que no se le puede dar folio. Avísale a un Gerente.');
+  }
+
+  // Nadie levanta documentos en la empresa hermana. Se valida aquí, en el
+  // servicio, y no solo en el controlador: así queda cubierto cualquier camino
+  // que llegue a crear una solicitud, hoy o el año que viene.
+  if (usuario && !puedeConEmpresa(usuario, sucursal.id_empresa)) {
+    throw forbidden(`${sucursal.nombre} es de ${sucursal.empresa_clave}. `
+                  + 'Solo puedes levantar documentos en sucursales de tu empresa.');
+  }
 
   // Si el frontend no mandó la existencia, la sellamos desde el ERP.
   // Se hace ANTES de abrir la transacción para no mantener locks abiertos
@@ -156,10 +187,10 @@ export async function crearSolicitud(datos) {
     //    renglón se vuelve Pedido sin cambiar de folio.
     const [cabecera] = await ejecutar(
       `INSERT INTO solicitudes_compras
-         (tipo, id_vendedor, id_sucursal, id_cliente, prioridad, estatus_actual,
-          observaciones, dias_vigencia, estatus_compras, estatus_compras_en)
-              VALUES (@tipo, @vendedor, @sucursal, @cliente::int, @prioridad, @estatus,
-                      @observaciones::text, @vigencia,
+         (tipo, id_vendedor, id_sucursal, id_empresa, id_cliente, prioridad,
+          estatus_actual, observaciones, dias_vigencia, estatus_compras, estatus_compras_en)
+              VALUES (@tipo, @vendedor, @sucursal, @empresa, @cliente::int, @prioridad,
+                      @estatus, @observaciones::text, @vigencia,
                       -- Si nace con faltantes ya está en manos de Compras: se
                       -- marca desde aquí para que la mesa no la vea "sin nadie".
                       @estatusCompras::text,
@@ -169,6 +200,7 @@ export async function crearSolicitud(datos) {
         tipo: TIPOS.COTIZACION,
         vendedor: id_vendedor,
         sucursal: id_sucursal,
+        empresa: sucursal.id_empresa,
         cliente: id_cliente,
         prioridad,
         estatus: estatusInicial,
@@ -626,12 +658,22 @@ export async function documentosParaRefrescarPrecio(limite = 200) {
 export async function listarSolicitudes(filtros = {}) {
   const {
     tipo, id_vendedor, prioridad, estatus, sucursal,
-    desde, hasta, busqueda,
+    desde, hasta, busqueda, id_empresa,
     limite = 50, pagina = 1,
   } = filtros;
 
   const where = [];
   const params = {};
+
+  // El filtro de empresa va PRIMERO y no es opcional de verdad: el controlador
+  // lo calcula con `empresaParaConsulta`, que a quien ve una sola empresa le
+  // impone la suya pase lo que pase. `null` significa alcance de grupo —ve
+  // todo—, y por eso se compara contra undefined/null y no con un `if (x)`:
+  // un cero o una cadena vacía tienen que llegar aquí como lo que son.
+  if (id_empresa !== undefined && id_empresa !== null) {
+    params.empresa = Number(id_empresa);
+    where.push('s.id_empresa = @empresa');
+  }
 
   // Sin tipo se devuelve todo, que es lo que quiere el buscador por folio: el
   // mismo número puede ser cotización hoy y pedido mañana, y quien lo teclea
@@ -701,7 +743,8 @@ export async function listarSolicitudes(filtros = {}) {
     ${FROM_CABECERA}
     LEFT JOIN solicitudes_detalle d ON d.id_solicitud = s.id
     ${clausula}
-    GROUP BY s.id, s.folio, s.tipo, s.enviada_en, s.vence_en, s.convertida_en,
+    GROUP BY s.id, s.folio, s.tipo, s.id_empresa, emp.clave, emp.nombre,
+             s.enviada_en, s.vence_en, s.convertida_en,
              s.dias_vigencia, s.id_vendedor, s.id_sucursal, s.id_cliente, s.prioridad,
              s.estatus_actual, s.observaciones, s.fecha_creacion, s.fecha_promesa_entrega,
              s.fecha_promesa_hasta, s.estatus_compras, s.estatus_compras_en, s.version,
@@ -1125,7 +1168,7 @@ const CERRADOS_SQL = `('Recibido','Cancelada','Rechazada')`;
  * @param {number} [filtros.dias]     ventana de análisis (default 30)
  * @param {number} [filtros.sucursal] limitar a una sucursal
  */
-export async function metricasGerencia({ dias = 30, sucursal } = {}) {
+export async function metricasGerencia({ dias = 30, sucursal, id_empresa } = {}) {
   const params = { dias: Number(dias) };
   let filtroSucursal = '';
   if (sucursal) {
@@ -1133,7 +1176,17 @@ export async function metricasGerencia({ dias = 30, sucursal } = {}) {
     filtroSucursal = ' AND s.id_sucursal = @sucursal';
   }
 
-  const ventana = `s.fecha_creacion >= NOW() - (@dias * INTERVAL '1 day')${filtroSucursal}`;
+  // El filtro de empresa entra en la MISMA ventana que usan todas las
+  // métricas, no en cada consulta por separado: así ningún indicador se queda
+  // sin filtrar por olvido y acaba mezclando los números de las dos empresas
+  // en una junta.
+  let filtroEmpresa = '';
+  if (id_empresa !== undefined && id_empresa !== null) {
+    params.empresa = Number(id_empresa);
+    filtroEmpresa = ' AND s.id_empresa = @empresa';
+  }
+
+  const ventana = `s.fecha_creacion >= NOW() - (@dias * INTERVAL '1 day')${filtroSucursal}${filtroEmpresa}`;
 
   // 1) Conteo por estatus
   const porEstatus = query(`

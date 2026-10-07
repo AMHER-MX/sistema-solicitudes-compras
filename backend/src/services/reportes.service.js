@@ -20,9 +20,21 @@ const CERRADOS = ESTATUS_FINALES.map((e) => `'${e}'`).join(', ');
  * Devuelve el fragmento y los parámetros; nunca concatena valores.
  */
 function armarFiltros(filtros = {}) {
-  const { tipo, id_vendedor, sucursal, prioridad, estatus, desde, hasta, busqueda, dias } = filtros;
+  const {
+    tipo, id_vendedor, sucursal, prioridad, estatus, desde, hasta, busqueda, dias,
+    id_empresa,
+  } = filtros;
   const where = [];
   const params = {};
+
+  // La empresa va primero y pasa por los CUATRO reportes, porque todos usan
+  // este mismo armador. Un Excel que mezclara los números de CATOSA y CADUSA
+  // no daría error: daría un total equivocado que alguien presentaría en una
+  // junta creyéndolo bueno.
+  if (id_empresa !== undefined && id_empresa !== null) {
+    params.empresa = Number(id_empresa);
+    where.push('s.id_empresa = @empresa');
+  }
 
   // Sin tipo el reporte trae los dos, que es lo que quiere Gerencia cuando
   // pregunta "¿cuánto se cotizó y cuánto se cerró?".
