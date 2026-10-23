@@ -16,7 +16,9 @@ import {
 } from '../utils/estatus.js';
 import { puedeConEmpresa } from '../utils/empresas.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
-import { consultarExistencias, existenciaDeSku, precioConfiable } from './erp/index.js';
+import {
+  comprobarErp, consultarExistencias, existenciaDeSku, precioConfiable,
+} from './erp/index.js';
 
 /**
  * Columnas del encabezado con sus datos relacionados, reutilizadas en listado
@@ -126,6 +128,39 @@ export async function crearSolicitud(datos) {
   if (usuario && !puedeConEmpresa(usuario, sucursal.id_empresa)) {
     throw forbidden(`${sucursal.nombre} es de ${sucursal.empresa_clave}. `
                   + 'Solo puedes levantar documentos en sucursales de tu empresa.');
+  }
+
+  // ── Con el ERP caído no se levantan documentos ──────────────────────────
+  //
+  // Cuando Quiter está configurado pero no contesta, el buscador sigue
+  // enseñando artículos: los del catálogo de respaldo. Son inventados. Si se
+  // deja pasar una cotización armada con esos números, queda guardada con una
+  // existencia y un precio falsos marcados como si vinieran de Quiter, y a
+  // partir de ahí nadie los puede distinguir de los buenos.
+  //
+  // Peor todavía: la regla de "esto es para lo que NO hay" decide con esas
+  // existencias. Con el respaldo en pantalla, el sistema puede rechazar un
+  // faltante real porque el catálogo simulado dice que hay doce.
+  //
+  // El refresco de precios ya se protegía de esto (ver `precioConfiable`),
+  // pero el alta no, que es por donde entra el dato la primera vez.
+  //
+  // Solo afecta a partidas de catálogo. Una partida LIBRE es un número de
+  // parte que el ERP no conoce de todas formas: el vendedor la escribió a
+  // mano, no hay nada que Quiter pudiera confirmar, y bloquearla sería quitar
+  // justo la herramienta que sirve cuando el ERP no está.
+  const hayDeCatalogo = items.some((it) => it.origen !== 'LIBRE');
+  if (hayDeCatalogo) {
+    const erp = await comprobarErp();
+    if (erp.responde === false) {
+      throw badRequest(
+        'Ahorita no hay conexión con Quiter, así que las existencias y los precios '
+        + 'que se ven en pantalla son de respaldo y no son reales. No se puede abrir '
+        + 'una cotización con esos datos. Vuelve a intentar en unos minutos; si sigue '
+        + 'igual, avísale a Sistemas. Lo que el cliente pidió y Quiter no conoce sí lo '
+        + 'puedes capturar a mano mientras tanto.',
+      );
+    }
   }
 
   // Si el frontend no mandó la existencia, la sellamos desde el ERP.

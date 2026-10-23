@@ -599,10 +599,10 @@ decide si se compra o se pide un traspaso.
 Si `QUITER_BASE_URL` queda vacío, el sistema muestra un **catálogo simulado** y
 lo advierte en la interfaz. Sirve para capacitar; las existencias no son reales.
 
-### 9.1 Dos errores a NO repetir
+### 9.1 Tres errores a NO repetir
 
-Los dos salieron de leer la tabla real de Quiter, y los dos daban resultados
-que *parecían* correctos:
+Los dos primeros salieron de leer la tabla real de Quiter, y los dos daban
+resultados que *parecían* correctos:
 
 1. **`WHERE i.ALMACEN = 101`** comparando un número contra una columna de texto.
    Quiter tiene almacenes como `102LA`, y al intentar convertirlos truena la
@@ -612,6 +612,49 @@ que *parecían* correctos:
 
 Además, Quiter devuelve **renglones repetidos** para un mismo artículo en un
 mismo almacén. Hay que sumarlos, no listarlos por separado.
+
+El tercero es de otra clase, y es el peor:
+
+3. **Dejar que el catálogo de respaldo pase por bueno.** Si Quiter está
+   configurado pero no contesta, el buscador sigue enseñando refacciones: las
+   del catálogo de demostración, con precios y existencias inventados. Lo único
+   que lo dice es una barra ámbar arriba de los resultados.
+
+   Esto se descubrió una hora antes de abrirle el sistema al equipo, con el
+   buscador mostrando "FLT-4520, $385, disponible en Gómez Palacio (3)" — todo
+   falso. Si alguien hubiera levantado una cotización en ese momento, habría
+   quedado guardada con esos números marcados como si vinieran de Quiter, y
+   después nadie podría distinguirla de una buena.
+
+   **La regla:** un dato de respaldo se puede *mostrar* (con su aviso), pero
+   nunca *guardar*. Hoy lo impiden dos cosas distintas:
+
+   - `precioConfiable(origen)` en `services/erp/index.js` — el refresco
+     automático de precios no pisa un precio real con uno de respaldo.
+   - `comprobarErp()` al principio de `crearSolicitud()` — con el ERP caído, no
+     se puede levantar una cotización de catálogo. Una partida capturada a mano
+     sí, porque es justo la herramienta que sirve cuando el ERP no está.
+
+### 9.2 Cómo saber si el ERP se cayó
+
+`GET /api/health` trae dos campos que parecen lo mismo y no lo son:
+
+```json
+"erp": { "origen": "QUITER_API", "responde": true, "estado": "contestando" }
+```
+
+- **`origen`** dice cómo está *configurada* la instalación.
+- **`responde`** dice si de verdad *contesta*, y para saberlo hace una consulta
+  real contra el ERP.
+
+Antes solo existía el primero, y por eso una caída se veía igual de sana que un
+día normal. Si `responde` sale en `false`, el campo `aviso` lo explica y el
+sistema ya está rechazando las cotizaciones de catálogo.
+
+`npm run test:erp` levanta un ERP de mentiras que se apaga a media prueba y
+revisa los dos lados: que con el ERP caído el sistema se niegue y lo diga, y que
+con el ERP sano todo siga funcionando igual. **Lo segundo importa tanto como lo
+primero**: una protección que también estorba el día normal termina quitándose.
 
 ---
 

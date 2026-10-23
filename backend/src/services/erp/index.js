@@ -117,6 +117,44 @@ export async function consultarExistencias({ termino, almacen }) {
 }
 
 /**
+ * ¿Está contestando el ERP AHORA MISMO?
+ *
+ * `origenActivo()` solo dice cómo está configurada la instalación; con Quiter
+ * configurado contesta 'QUITER_API' aunque la API lleve horas caída. Eso hizo
+ * que una caída fuera invisible: /api/health se veía sano y lo único que
+ * avisaba era una barra color ámbar que un vendedor con prisa no lee.
+ *
+ * Esta función sí pregunta. Hace una consulta de verdad y mira con qué origen
+ * vuelve: si vuelve como MOCK_FALLBACK, el ERP no está respondiendo.
+ *
+ * El término de sonda es uno que no le va a encontrar nada a nadie. No importa
+ * que la respuesta venga vacía —lo que se está midiendo es si CONTESTA—, y así
+ * no se arrastra un catálogo entero cada vez que alguien mira la salud.
+ * Además pasa por el mismo caché de 30 segundos que el resto, así que
+ * revisarla seguido no le pega al ERP.
+ *
+ * Devuelve `responde: null` cuando no hay ERP que probar (instalación de
+ * capacitación). Null no es "falla": es "no aplica", y conviene no confundirlos.
+ */
+const TERMINO_SONDA = '__sonda_de_salud__';
+
+export async function comprobarErp() {
+  const configurado = origenActivo();
+  if (configurado !== 'QUITER_API') {
+    return { configurado, responde: null, origen: 'MOCK' };
+  }
+
+  try {
+    const { origen } = await consultarExistencias({ termino: TERMINO_SONDA });
+    return { configurado, responde: origen === 'QUITER_API', origen };
+  } catch (error) {
+    // consultarExistencias ya atrapa lo suyo; si algo llegara hasta aquí, se
+    // reporta como caído en vez de tumbar la revisión de salud entera.
+    return { configurado, responde: false, origen: 'MOCK_FALLBACK', error: error.message };
+  }
+}
+
+/**
  * Devuelve la existencia puntual de un SKU (número).
  * La usa el alta de solicitudes para sellar `existencia_real_almacen`.
  */
@@ -154,9 +192,26 @@ export async function estadoErp() {
     cache_ttl_seg: env.erp.cacheTtlSeg,
   };
 
-  if (origen === 'QUITER_API') {
-    return { ...base, api: { base_url: env.erp.baseUrl } };
+  if (origen !== 'QUITER_API') {
+    return { ...base, responde: null, aviso: 'Sin ERP configurado; el sistema usa el catálogo simulado.' };
   }
 
-  return { ...base, aviso: 'Sin ERP configurado; el sistema usa el catálogo simulado.' };
+  // `origen` dice cómo está configurado esto; `responde` dice si de verdad
+  // contesta. Antes solo iba lo primero, y por eso una caída de Quiter se veía
+  // igual de sana que un día normal: lo único que avisaba era la barra ámbar
+  // del buscador. Un monitoreo que no puede distinguir las dos cosas no sirve
+  // para lo único que se le pide.
+  const prueba = await comprobarErp();
+
+  return {
+    ...base,
+    api: { base_url: env.erp.baseUrl },
+    responde: prueba.responde,
+    // En texto, para quien lea esto desde el navegador sin interpretar un booleano.
+    estado: prueba.responde ? 'contestando' : 'NO CONTESTA',
+    ...(prueba.responde ? {} : {
+      aviso: 'El ERP está configurado pero no responde. El buscador está mostrando '
+           + 'el catálogo de respaldo y NO se pueden levantar cotizaciones de catálogo.',
+    }),
+  };
 }

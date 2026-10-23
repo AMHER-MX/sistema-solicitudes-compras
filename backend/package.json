@@ -12,10 +12,12 @@
     "db:setup": "node scripts/setupDb.js",
     "db:migrar": "node scripts/migrarDb.js",
     "db:estado": "node scripts/estadoDb.js",
+    "db:limpiar": "node scripts/limpiarParaArranque.js",
     "smoke": "node scripts/smokeTest.js",
-    "test": "node scripts/testUsuarios.js && node scripts/validarSql.js && node scripts/testClientes.js && node scripts/smokeTest.js",
+    "test": "node scripts/testUsuarios.js && node scripts/validarSql.js && node scripts/testClientes.js && node scripts/smokeTest.js && node scripts/testErpCaido.js",
     "test:sql": "node scripts/validarSql.js",
     "test:usuarios": "node scripts/testUsuarios.js",
+    "test:erp": "node scripts/testErpCaido.js",
     "start:nube": "node scripts/prepararNube.js && node src/server.js",
     "test:clientes": "node scripts/testClientes.js"
   },
@@ -23,12 +25,12 @@
     "axios": "^1.7.7",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
+    "dotenv": "^16.6.1",
     "exceljs": "^4.4.0",
     "express": "^4.21.1",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
-    "pg": "^8.23.0"
+    "pg": "^8.23.1"
   },
   "engines": {
     "node": ">=20"
